@@ -25,14 +25,22 @@
     "dist/"
   ],
   "keywords": [
+    "rate-limiter",
     "rate-limit",
+    "rate-limiting",
     "cluster",
     "ipc",
     "semaphore",
     "sliding-window",
-    "high-performance",
-    "zero-allocation"
+    "concurrency",
+    "throttle",
+    "multiprocess",
+    "worker",
+    "api"
   ],
+  "engines": {
+    "node": ">=15.0.0"
+  },
   "devDependencies": {
     "rollup": "^4.62.5"
   }

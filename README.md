@@ -126,12 +126,14 @@ Calling this again with the **same** `apiProviderId` and the **same** configurat
 
 ### `createWorkerClusterRateLimiter(config)`
 
-Call once per worker process, per `apiProviderId` you need to rate-limit.
+Creates or retrieves a worker-side limiter for a specific `apiProviderId`. 
+
+Because this factory is **idempotent**, you do not need to pass the limiter instance around your app. You can safely call this function wherever you need it (e.g., across different route files). As long as the `apiProviderId` and configuration match, it will return the exact same shared instance for that worker.
 
 ```typescript
 type WorkerConfig = {
   apiProviderId: string;
-  mode: "semaphore" | "duration"; // must match the primary's mode for this apiProviderId
+  mode: "semaphore" | "duration"; // must match the primary's mode
   permitTimeoutDurationInSeconds: number;
 };
 
