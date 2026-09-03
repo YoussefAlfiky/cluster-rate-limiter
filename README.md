@@ -48,7 +48,10 @@ if (cluster.isPrimary) {
     durationInSeconds: 1, // at most 100 Stripe calls started per second, across every worker
   });
 
-  for (let i = 0; i < os.cpus().length; i++) cluster.fork();
+  const numWorkers = os.availableParallelism?.() ?? os.cpus().length;
+  for (let i = 0; i < numWorkers; i++) {
+    cluster.fork();
+  }
 } else {
   await import("./worker.js");
 }
