@@ -1,6 +1,6 @@
 {
   "name": "cluster-rate-limiter",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "description": "A zero-dependency, ultra-fast Node.js cluster rate limiter utilizing IPC and a zero-allocation Float64Array ring buffer for high-throughput semaphore and sliding window limits.",
   "license": "MIT",
   "author": "Youssef Alfiky",
