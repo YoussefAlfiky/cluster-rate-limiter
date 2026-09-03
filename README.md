@@ -66,14 +66,15 @@ const stripeLimiter = createWorkerClusterRateLimiter({
 });
 
 async function chargeCustomer(customerId, amountCents) {
+  // You can pass `fetch` directly, followed by its arguments.
+  // The limiter will perfectly forward the URL and the options object!
   return stripeLimiter.run(
-    (id, amount) =>
-      fetch("https://api.stripe.com/v1/charges", {
-        method: "POST",
-        body: JSON.stringify({ customer: id, amount }),
-      }),
-    customerId,
-    amountCents
+    fetch, 
+    "https://api.stripe.com/v1/charges", 
+    {
+      method: "POST",
+      body: JSON.stringify({ customer: customerId, amount: amountCents }),
+    }
   );
 }
 ```
