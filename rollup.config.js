@@ -3,7 +3,7 @@ export default {
     external: [/^node:/], 
     output: [
         {
-            file: "dist/index.js",
+            file: "dist/index.mjs",
             format: "es",
         },
         {
