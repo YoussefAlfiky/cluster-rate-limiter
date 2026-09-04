@@ -57,7 +57,9 @@ if (cluster.isPrimary) {
 }
 ```
 
-**Worker process** (`worker.js`) — every worker that needs to call the rate-limited API gets its own worker-side handle, matching the primary's `apiProviderId` and `mode`:
+**Worker process** (`worker.js`) — every worker that needs to call the rate-limited API gets its own worker-side handle, matching the primary's `apiProviderId` and `mode`.
+
+**Pro-tip:** `run` automatically forwards arguments, so you can pass functions like `fetch` directly.
 
 ```javascript
 import { createWorkerClusterRateLimiter } from "cluster-rate-limiter";
@@ -65,12 +67,10 @@ import { createWorkerClusterRateLimiter } from "cluster-rate-limiter";
 const stripeLimiter = createWorkerClusterRateLimiter({
   apiProviderId: "stripe",
   mode: "duration",
-  permitTimeoutDurationInSeconds: 30, // give up and reject if no permit arrives within 30s
+  permitTimeoutDurationInSeconds: 5, // maximum time a request will wait for an available slot
 });
 
 async function chargeCustomer(customerId, amountCents) {
-  // You can pass `fetch` directly, followed by its arguments.
-  // The limiter will perfectly forward the URL and the options object!
   return stripeLimiter.run(
     fetch, 
     "https://api.stripe.com/v1/charges", 
@@ -92,10 +92,10 @@ Every failure this package raises is a `RateLimiterError` with a stable `.code` 
 import { RateLimiterError } from "cluster-rate-limiter";
 
 try {
-  await stripeLimiter.run(chargeCustomer, customerId, amountCents);
+  await stripeLimiter.run(doWork, arg1, arg2);
 } catch (err) {
   if (err instanceof RateLimiterError && err.code === "ERR_PERMIT_TIMEOUT") {
-    // the primary never granted a permit in time - the queue is backed up, back off and retry later
+    // The request waited too long for a slot. Safe to retry or return HTTP 429.
   }
   throw err;
 }
@@ -106,7 +106,7 @@ try {
 | | Semaphore mode | Duration mode |
 |---|---|---|
 | Guarantees | At most N calls in flight at once | At most N calls **started** in any trailing window |
-| Permit released | When your function's promise settles | Right after your function is invoked, not when it finishes |
+| Capacity restored | When your function's promise settles | Automatically as the time window passes |
 | Worker → primary traffic | One ask, one release, per call | One ask per call — no release message at all |
 | Use for | "This has N concurrent connection slots" | "This API allows N requests per second" |
 
@@ -203,7 +203,12 @@ In practice, none of this bookkeeping is what limits your throughput — the ext
 
 Neither column is strictly better — they solve different problems. If you're rate-limiting an external API from workers that all live on one box, the left column gets you a tighter guarantee with less infrastructure and lower latency. If you need one limit shared across a fleet of machines, you need the right column's shape of solution, and this package intentionally doesn't try to be that.
 
-One trade-off worth calling out on its own: duration mode here has **zero burst tolerance** by design — it will never let more than `maxConcurrentRequests` calls start in any trailing `durationInSeconds` window, full stop. A token bucket would let you spend saved-up capacity from a quiet stretch on a later burst. If the API you're calling enforces its own limit with a hard window (many do), this matches that shape exactly. If it's a bucket itself, this is somewhat more conservative than strictly necessary — which is the safe direction to be wrong in.
+### A note on burst tolerance (Strict Window vs. Token Bucket)
+
+By design, `duration` mode has **zero burst tolerance**. It uses a strict sliding window and will *never* exceed `maxConcurrentRequests` in any trailing time window. It does not act like a token bucket (which saves up capacity from quiet periods to allow sudden bursts).
+
+* **If the target API enforces a strict window:** This limiter matches their logic exactly.
+* **If the target API uses a token bucket:** This limiter will simply be more conservative than strictly necessary—which is the safest direction to be wrong in.
 
 ## License
 
