@@ -177,18 +177,23 @@ class RateLimiterError extends Error {
 
 - **Native `cluster` only.** The primary process must fork its own workers via `cluster.fork()`. Process managers that abstract or replace the primary process (PM2's cluster mode, for example) don't preserve the IPC tree this relies on — worker messages won't reach the limiter.
 - **One machine.** See [What this is (and isn't)](#what-this-is-and-isnt). This does not aggregate across hosts.
-- **Mode must match.** A worker configured for `"semaphore"` talking to a primary configured for `"duration"` (or vice versa) fails fast with `ERR_MODE_MISMATCH`, once, at construction — it won't silently half-work.
+- **Mode must match.** A worker configured for `"semaphore"` talking to a primary configured for `"duration"` (or vice versa) fails fast on the first request. The worker strictly validates its configuration against the primary's enforced mode upon the first `.run()` call to prevent silent limits bypassing.
 - **Don't block the event loop inside `run()`.** This depends on fast, timely IPC in both directions. A CPU-bound synchronous function passed as `caller` freezes the event loop, delays every other permit request and release on that worker, and causes real rate-limit drift. Offload heavy synchronous work to `node:worker_threads`; only the coordination needs to happen on the main thread.
 - **Construct the primary limiter once per `apiProviderId`, and share it.** The factory is idempotent for matching configuration, so accidentally calling it more than once with the same settings is harmless. Calling it with conflicting settings is treated as the misconfiguration it almost certainly is, not silently resolved by picking one.
 
 ## Performance
 
-- **No allocation on the hot path.** The duration-mode grant log is a fixed-capacity `Float64Array` ring buffer, not a linked list or array of boxed objects — enqueue, dequeue, and prune are `O(1)` / `O(log n)` operations over raw memory, with zero per-request heap allocation.
-- **One IPC hop, not a network round trip.** Coordination goes over the pipe `cluster` already sets up between primary and worker — no serialization to a wire protocol, no separate service, no network stack. This is the fastest a cross-process rate limiter can plausibly be on one machine.
+- **Zero-allocation window tracking.** The duration-mode grant log is a fixed-capacity `Float64Array` ring buffer, not a linked list or array of boxed objects — enqueue, dequeue, and prune are `O(1)` / `O(log n)` operations over raw memory, completely avoiding garbage collection pauses on the core data structure.
+- **One IPC hop, not a network round trip.** Coordination goes over the pipe `cluster` already sets up between primary and worker — no TCP overhead, no separate service, no network stack. It relies entirely on Node's native IPC instead of talking to external infrastructure, making it the fastest a cross-process rate limiter can plausibly be on one machine.
 - **Duration mode sends fewer messages than you'd expect.** Because capacity is governed entirely by *when* a grant was issued, not by explicit confirmation, a duration-mode worker never sends a release message at all — half the IPC traffic of the equivalent semaphore-mode call.
-- **Crash recovery is immediate, not timeout-based.** A worker that dies mid-request is detected via `cluster`'s own `'exit'` event — held capacity is reclaimed the moment the OS reaps the process, not after some multi-second TTL expires.
 
 In practice, none of this bookkeeping is what limits your throughput — the external API call you're gating almost always costs orders of magnitude more time than the permit round trip. The point of the design above isn't to make the limiter fast in isolation; it's to make sure the limiter is never the reason your throughput is lower than it should be.
+
+## Fault Tolerance & Crash Recovery
+
+A worker that dies mid-request is detected via `cluster`'s own `'exit'` event, ensuring system stability without relying on arbitrary TTL timeouts:
+- *Semaphore mode (Instant release):* Active capacity is instantly freed the moment the OS reaps the process, ensuring your throughput doesn't bottleneck waiting for a timeout.
+- *Duration mode (State-preserving):* Crash events do not erase historical grants. Sent requests remain accurately counted until they naturally expire, guaranteeing zero rate-limit violations during worker restarts.
 
 ## Design trade-offs
 
@@ -197,7 +202,7 @@ In practice, none of this bookkeeping is what limits your throughput — the ext
 | Coordinates across | One primary's own `cluster` workers | Any number of independent Node processes, any machines |
 | External dependencies | None | Redis — provisioned, operated, secured separately |
 | Per-permit cost | One local IPC round trip | One network round trip to Redis |
-| Crash recovery | Immediate (`cluster` `'exit'` event) | Timeout/TTL-based |
+| Crash recovery | **Semaphore:** Instant release<br>**Duration:** State-preserving | Timeout/TTL-based |
 | Ordering across workers | Exact — one arbiter, one queue | Approximate — each instance has its own local queue |
 | Duration mode shape | Strict sliding-window log: never exceeds N in *any* trailing window, no burst credit | Often a token bucket: allows a burst up to the bucket size by spending capacity saved from a quiet period |
 
