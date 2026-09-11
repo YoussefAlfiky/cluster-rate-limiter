@@ -22,7 +22,8 @@
     "build": "rollup -c"
   },
   "files": [
-    "dist/"
+    "dist/",
+    "types.d.ts"
   ],
   "keywords": [
     "rate-limiter",
