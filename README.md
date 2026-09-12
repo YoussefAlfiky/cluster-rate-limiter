@@ -11,6 +11,7 @@ A zero-dependency rate limiter for Node.js apps running in [`cluster`](https://n
 - [API reference](#api-reference)
 - [Warnings and constraints](#warnings-and-constraints)
 - [Performance](#performance)
+- [Fault Tolerance & Crash Recovery](#fault-tolerance--crash-recovery)
 - [Design trade-offs](#design-trade-offs)
 - [License](#license)
 
@@ -161,7 +162,7 @@ class RateLimiterError extends Error {
 | Code | Raised when |
 |---|---|
 | `ERR_NOT_PRIMARY` | A primary limiter was constructed from a worker process |
-| `ERR_NOT_WORKER` | A worker limiter was constructed from the primary process |
+| `ERR_NOT_WORKER` | A worker limiter was constructed outside of a cluster worker (e.g., in the primary process or a standalone script) |
 | `ERR_INVALID_API_PROVIDER_ID` | `apiProviderId` isn't a string |
 | `ERR_INVALID_MAX_CONCURRENT_REQUESTS` | `maxConcurrentRequests` isn't a positive integer |
 | `ERR_INVALID_MODE` | `mode` isn't `"semaphore"` or `"duration"` |
@@ -177,7 +178,7 @@ class RateLimiterError extends Error {
 
 - **Native `cluster` only.** The primary process must fork its own workers via `cluster.fork()`. Process managers that abstract or replace the primary process (PM2's cluster mode, for example) don't preserve the IPC tree this relies on — worker messages won't reach the limiter.
 - **One machine.** See [What this is (and isn't)](#what-this-is-and-isnt). This does not aggregate across hosts.
-- **Mode must match.** A worker configured for `"semaphore"` talking to a primary configured for `"duration"` (or vice versa) fails fast on the first request. The worker strictly validates its configuration against the primary's enforced mode upon the first `.run()` call to prevent silent limits bypassing.
+- **Mode must match.** A worker configured for `"semaphore"` talking to a primary configured for `"duration"` (or vice versa) rejects on the first `.run()` call. The worker validates its configuration against the primary automatically in the background during the initial IPC handshake. This means the validation state is usually already resolved and waiting by the time `.run()` is invoked, completely preventing silent bypasses.
 - **Don't block the event loop inside `run()`.** This depends on fast, timely IPC in both directions. A CPU-bound synchronous function passed as `caller` freezes the event loop, delays every other permit request and release on that worker, and causes real rate-limit drift. Offload heavy synchronous work to `node:worker_threads`; only the coordination needs to happen on the main thread.
 - **Construct the primary limiter once per `apiProviderId`, and share it.** The factory is idempotent for matching configuration, so accidentally calling it more than once with the same settings is harmless. Calling it with conflicting settings is treated as the misconfiguration it almost certainly is, not silently resolved by picking one.
 
