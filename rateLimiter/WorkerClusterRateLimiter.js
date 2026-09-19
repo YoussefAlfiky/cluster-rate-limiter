@@ -86,12 +86,7 @@ export class WorkerRateLimiter_ClustersMode {
                 };
             }, this.#permitTimeoutDurationMs);
             this.#pendingRequests.set(requestId, {resolve, reject, timeout});
-            const askForAToken = { 
-                apiProviderId: this.#apiProviderId, 
-                requestId, 
-                askForToken: true
-            };
-            process.send(askForAToken, (err) => {
+            process.send({apiProviderId: this.#apiProviderId, requestId, askForToken: true}, (err) => {
                 if (err) {
                     this.#pendingRequests.delete(requestId);
                     clearTimeout(timeout);
@@ -156,11 +151,7 @@ export class WorkerRateLimiter_ClustersMode {
                 );
             }, 2000);
             this.#primaryAcknowledgementTrackers = {resolve, reject, timeout};
-            const checkPrimaryLimiterMatch = {
-                apiProviderId: this.#apiProviderId, 
-                acknowledgePrimary: "pending"
-            };
-            process.send(checkPrimaryLimiterMatch, (err) => {
+            process.send({apiProviderId: this.#apiProviderId, acknowledgePrimary: "pending"}, (err) => {
                 if (err) {
                     this.#primaryAcknowledgementTrackers = null;
                     clearTimeout(timeout);

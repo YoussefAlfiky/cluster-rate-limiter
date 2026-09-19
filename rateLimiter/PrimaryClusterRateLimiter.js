@@ -177,8 +177,7 @@ export class PrimaryRateLimiter_ClustersMode {
                 } else {
                     this.#incrementSemaphoreWorkerUsage(clusterId, requestId);
                 };
-                const message = {processingRequest: true, apiProviderId: this.#apiProviderId, requestId};
-                this.#grantRequest(worker, message, timestamp, 0);
+                this.#grantRequest(worker, {processingRequest: true, apiProviderId: this.#apiProviderId, requestId}, timestamp, 0);
             };
         } finally {
             this.#isGrantingPermitsForPendingRequests = false;
