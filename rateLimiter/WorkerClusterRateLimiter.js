@@ -111,7 +111,7 @@ export class WorkerRateLimiter_ClustersMode {
                 requestId,
                 terminateOneRequest: true
             };
-            const sendPermitTermination = /** @param {Number} retryCount */(retryCount) => {
+            const sendPermitTermination = /** @param {number} retryCount */(retryCount) => {
                 if (!process.send) {
                     return reject(WorkerRateLimiter_ClustersMode.#notAClusterWorker_Error);
                 };
