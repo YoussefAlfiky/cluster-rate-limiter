@@ -43,6 +43,7 @@
     "node": ">=15.0.0"
   },
   "devDependencies": {
+    "@types/node": "^26.6.2",
     "rollup": "^4.62.5"
   }
 }
