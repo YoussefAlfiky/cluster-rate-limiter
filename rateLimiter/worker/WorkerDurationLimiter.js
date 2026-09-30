@@ -2,8 +2,7 @@
 import {BaseWorkerLimiter} from "./BaseWorkerLimiter.js"
 import { acquirePermit } from "./ipc/acquirePermit.js"
 /**
-    * @typedef {import("node:crypto").UUID} UUID
-    * @typedef {{resolve: (requestId: UUID) => void, reject: (reason?: unknown) => void, timeout: NodeJS.Timeout}} PendingRequestTrackers
+    * @typedef {{resolve: (requestId: number) => void, reject: (reason?: unknown) => void, timeout: NodeJS.Timeout}} PendingRequestTrackers
 */
 
 /**
@@ -32,9 +31,14 @@ export class WorkerDurationLimiter extends BaseWorkerLimiter {
     #permitTimeoutDurationMs = 0;
     /**
         * @readonly 
-        * @type {Map<UUID, PendingRequestTrackers>}
+        * @type {Map<number, PendingRequestTrackers>}
     */
     #pendingRequests;
+    /**@readonly */
+    #MIN_SMI = -(1 << 30);
+    /**@readonly */
+    #MAX_SMI =  (1 << 30) - 1;
+    #requestId = this.#MIN_SMI;
     /**
         * Initializes the worker-side duration rate limiter and establishes IPC routing.
         *
@@ -50,7 +54,7 @@ export class WorkerDurationLimiter extends BaseWorkerLimiter {
         * @throws {RateLimiterError} If any configuration parameter is invalid or out of bounds.
     */
     constructor(apiProviderId, permitTimeoutDurationInSeconds) {
-        /**@type {Map<UUID, PendingRequestTrackers>}*/
+        /**@type {Map<number, PendingRequestTrackers>}*/
         const pendingRequests = new Map();
         super(apiProviderId, "duration", permitTimeoutDurationInSeconds, pendingRequests, null);
         this.#apiProviderId = apiProviderId;
@@ -94,7 +98,12 @@ export class WorkerDurationLimiter extends BaseWorkerLimiter {
             await this.ready();
             this.#didAcknowledgePrimaryMatch = true;
         };
-        await acquirePermit(this.#apiProviderId, this.#pendingRequests, this.#permitTimeoutDurationMs);
+        await acquirePermit(
+            this.#apiProviderId, 
+            this.#requestId === this.#MAX_SMI ? this.#requestId = this.#MIN_SMI : ++this.#requestId,
+            this.#pendingRequests, 
+            this.#permitTimeoutDurationMs
+        );
         return caller(...args);
     };
 };

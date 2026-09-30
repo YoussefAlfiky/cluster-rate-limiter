@@ -4,11 +4,10 @@ import { acquirePermit } from "./ipc/acquirePermit.js"
 import { releaseSemaphorePermit as releasePermit } from "./ipc/releaseSemaphorePermit.js";
 import { EventListenerRegistry } from "../events/EventListenerRegistry.js"
 /**
-    * @typedef {import("node:crypto").UUID} UUID
-    * @typedef {{resolve: (requestId: UUID) => void, reject: (reason?: unknown) => void, timeout: NodeJS.Timeout}} PendingRequestTrackers
+    * @typedef {{resolve: (requestId: number) => void, reject: (reason?: unknown) => void, timeout: NodeJS.Timeout}} PendingRequestTrackers
 */
 /**
-    * @typedef {(apiProviderId: string, requestId: UUID, err: unknown) => void | Promise<void>} ReleaseFailureCallback
+    * @typedef {(apiProviderId: string, requestId: number, err: unknown) => void | Promise<void>} ReleaseFailureCallback
     * @typedef {(err: unknown) => void | Promise<void>} ErrorCallback
     * 
     * @typedef {Object} ListenerBuckets
@@ -46,7 +45,7 @@ export class WorkerSemaphoreLimiter extends BaseWorkerLimiter {
     #permitTimeoutDurationMs = 0;
     /**
         * @readonly 
-        * @type {Map<UUID, PendingRequestTrackers>}
+        * @type {Map<number, PendingRequestTrackers>}
     */
     #pendingRequests;
     /**
@@ -59,6 +58,11 @@ export class WorkerSemaphoreLimiter extends BaseWorkerLimiter {
     * @type {EventListenerRegistry<ListenerBuckets>}
     */
     #eventEmitter;
+    /**@readonly */
+    #MIN_SMI = -(1 << 30);
+    /**@readonly */
+    #MAX_SMI =  (1 << 30) - 1;
+    #requestId = this.#MIN_SMI;
     /**
         * Initializes the worker-side semaphore rate limiter and establishes IPC routing.
         *
@@ -74,14 +78,14 @@ export class WorkerSemaphoreLimiter extends BaseWorkerLimiter {
         * @throws {RateLimiterError} If any configuration parameter is invalid or out of bounds.
     */
     constructor(apiProviderId, permitTimeoutDurationInSeconds) {
-        /**@type {Map<UUID, PendingRequestTrackers>}*/
+        /**@type {Map<number, PendingRequestTrackers>}*/
         const pendingRequests = new Map();
         /**@type {ListenerBuckets}*/
         const listenerBuckets = {
             releasePermitFailure: { on: new Set(), once: new Set() },
             error: { on: new Set(), once: new Set() }
         };
-        const onUnclaimedPermit = /**@param {UUID} requestId*/(requestId) => {
+        const onUnclaimedPermit = /**@param {number} requestId*/(requestId) => {
             releasePermit(
                 apiProviderId, 
                 requestId, 
@@ -134,7 +138,12 @@ export class WorkerSemaphoreLimiter extends BaseWorkerLimiter {
             await this.ready();
             this.#didAcknowledgePrimaryMatch = true;
         };
-        const requestId = await acquirePermit(this.#apiProviderId, this.#pendingRequests, this.#permitTimeoutDurationMs);
+        const requestId = await acquirePermit(
+            this.#apiProviderId, 
+            this.#requestId === this.#MAX_SMI ? this.#requestId = this.#MIN_SMI : ++this.#requestId,
+            this.#pendingRequests, 
+            this.#permitTimeoutDurationMs
+        );
         try {
             return await caller(...args);
         } finally {

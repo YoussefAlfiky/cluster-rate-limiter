@@ -11,11 +11,10 @@ import { triggerEvent } from "../events/triggerEvent.js"
 
 /**
     * @typedef {import("node:cluster").Worker} Worker
-    * @typedef {import("node:crypto").UUID} UUID
-    * @typedef {{clusterId: number, requestId: UUID}} ClusterRequest
+    * @typedef {{clusterId: number, requestId: number}} ClusterRequest
 */
 /**
-    * @typedef {(workerId: number, apiProviderId: string, requestId: UUID, err: unknown) => void | Promise<void>} GrantPermitFailureCallback
+    * @typedef {(workerId: number, apiProviderId: string, requestId: number, err: unknown) => void | Promise<void>} GrantPermitFailureCallback
     * @typedef {(err: unknown) => void | Promise<void>} ErrorCallback
     * 
     * @typedef {Object} PrimaryListenerBuckets
@@ -119,7 +118,7 @@ export class PrimaryDurationLimiter extends EventListenerRegistry {
     };
     /** 
         * @param {Worker} worker
-        * @param {{processingRequest: boolean, apiProviderId: string, requestId: UUID}} message 
+        * @param {{processingRequest: boolean, apiProviderId: string, requestId: number}} message 
         * @param {number} timestamp
         * @param {number} retryCount
     */
@@ -157,9 +156,9 @@ export class PrimaryDurationLimiter extends EventListenerRegistry {
         * @param {Object} msg 
     */
     #handleWorkerMessage(worker, msg) {
-        if ('requestId' in msg && typeof msg.requestId === "string") {
+        if ('requestId' in msg && typeof msg.requestId === "number") {
+            const requestId = msg.requestId;
             if ('askForToken' in msg && msg.askForToken === true) {
-                const requestId = /**@type {UUID}*/(msg.requestId);
                 this.#requestsQueue.enqueue({clusterId: worker.id, requestId});
                 this.#clusters.set(worker.id, worker);
                 this.#grantPendingRequests();

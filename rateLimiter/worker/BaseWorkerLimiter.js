@@ -3,8 +3,7 @@ import { RateLimiterError } from "../errors/RateLimiterError.js";
 import { validateWorkerLimiter } from "./validators/validateWorkerLimiter.js";
 import { registerWorkerLimiter } from "./registry/registerWorkerLimiter.js";
 /**
-    * @typedef {import("node:crypto").UUID} UUID
-    * @typedef {{resolve: (requestId: UUID) => void, reject: (reason?: unknown) => void, timeout: NodeJS.Timeout}} PendingRequestTrackers
+    * @typedef {{resolve: (requestId: number) => void, reject: (reason?: unknown) => void, timeout: NodeJS.Timeout}} PendingRequestTrackers
     * @typedef {{resolve: () => void, reject: (reason?: unknown) => void, timeout: NodeJS.Timeout}} PrimaryAcknowledgementTrackers
 */
 
@@ -32,7 +31,7 @@ export class BaseWorkerLimiter {
     #apiProviderId;
     /** 
         * @readonly
-        * @type {Map<UUID, PendingRequestTrackers>} 
+        * @type {Map<number, PendingRequestTrackers>} 
     */
     #pendingRequests;
     /** 
@@ -44,7 +43,7 @@ export class BaseWorkerLimiter {
     #primaryAcknowledgementPromise;
     /** @type {PrimaryAcknowledgementTrackers | null} */
     #primaryAcknowledgementTrackers = null;
-    /** @type {( (requestId: UUID) => void ) | null}*/
+    /** @type {( (requestId: number) => void ) | null}*/
     #onUnclaimedPermit;
     #didCompletePrimaryHandshake = false;
     /** 
@@ -88,9 +87,9 @@ export class BaseWorkerLimiter {
         if (
             'processingRequest' in msg && msg.processingRequest === true 
             && 
-            'requestId' in msg && typeof msg.requestId === "string"
+            'requestId' in msg && typeof msg.requestId === "number"
         ) {
-            const requestId = /** @type {UUID} */(msg.requestId);
+            const requestId = msg.requestId;
             const trackers = this.#pendingRequests.get(requestId);
             if (!trackers) {
                 // this.#onUnclaimedPermit is always null in duration mode
@@ -171,10 +170,10 @@ export class BaseWorkerLimiter {
         * @param {number} permitTimeoutDurationInSeconds
         * Maximum duration (in seconds) a request will wait in the queue for a primary permit before timing out.
         * 
-        * @param {Map<UUID, PendingRequestTrackers>} pendingRequests
+        * @param {Map<number, PendingRequestTrackers>} pendingRequests
         * Shared map utilized by subclasses to track pending requests awaiting primary acknowledgment.
         * 
-        * @param {( (requestId: UUID) => void ) | null} onUnclaimedPermit
+        * @param {( (requestId: number) => void ) | null} onUnclaimedPermit
         * Injected callback to safely release permits that arrive after their local request has timed out. 
         * Required for 'semaphore' mode to release the lock, but explicitly `null` for 'duration' mode.
         * 

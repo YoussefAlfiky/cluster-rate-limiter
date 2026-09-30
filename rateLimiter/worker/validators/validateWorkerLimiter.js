@@ -2,16 +2,15 @@
 import { isWorker } from "node:cluster";
 import { RateLimiterError } from "../../errors/RateLimiterError.js";
 /**
-    * @typedef {import("node:crypto").UUID} UUID
-    * @typedef {{resolve: (requestId: UUID) => void, reject: (reason?: unknown) => void, timeout: NodeJS.Timeout}} PendingRequestTrackers 
+    * @typedef {{resolve: (requestId: number) => void, reject: (reason?: unknown) => void, timeout: NodeJS.Timeout}} PendingRequestTrackers 
 */
 
 /**
     * @param {string} apiProviderId 
     * @param {"semaphore" | "duration"} mode 
     * @param {number} permitTimeoutDurationInSeconds 
-    * @param {Map<UUID, PendingRequestTrackers>} pendingRequestsMap
-    * @param {( (requestId: UUID) => void ) | null} onUnclaimedPermit
+    * @param {Map<number, PendingRequestTrackers>} pendingRequestsMap
+    * @param {( (requestId: number) => void ) | null} onUnclaimedPermit
 */
 export function validateWorkerLimiter(apiProviderId, mode, permitTimeoutDurationInSeconds, pendingRequestsMap, onUnclaimedPermit) {
     if (!isWorker) {

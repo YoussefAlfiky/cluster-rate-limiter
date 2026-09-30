@@ -1,19 +1,17 @@
 //@ts-check
-import { randomUUID } from "node:crypto";
 import {RateLimiterError} from "../../errors/RateLimiterError.js"
 /**
-    * @typedef {import("node:crypto").UUID} UUID
-    * @typedef {{resolve: (requestId: UUID) => void, reject: (reason?: unknown) => void, timeout: NodeJS.Timeout}} PendingRequestTrackers 
+    * @typedef {{resolve: (requestId: number) => void, reject: (reason?: unknown) => void, timeout: NodeJS.Timeout}} PendingRequestTrackers 
 */
 
 /** 
     * @param {string} apiProviderId
-    * @param {Map<UUID, PendingRequestTrackers>} pendingRequestsMap
+    * @param {number} requestId
+    * @param {Map<number, PendingRequestTrackers>} pendingRequestsMap
     * @param {number} permitTimeoutDurationMs
-    * @returns {Promise<UUID>} 
+    * @returns {Promise<number>} 
 */
-export function acquirePermit(apiProviderId, pendingRequestsMap, permitTimeoutDurationMs) {
-    const requestId = randomUUID();
+export function acquirePermit(apiProviderId, requestId, pendingRequestsMap, permitTimeoutDurationMs) {
     return new Promise((resolve, reject) => {
         if (!process.send) {
             return reject(new RateLimiterError(

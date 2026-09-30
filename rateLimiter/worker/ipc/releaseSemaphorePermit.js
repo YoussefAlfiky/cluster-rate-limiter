@@ -2,9 +2,8 @@
 import { RateLimiterError } from "../../errors/RateLimiterError.js";
 import { triggerEvent } from "../../events/triggerEvent.js"
 
-/** @typedef {import("node:crypto").UUID} UUID */
 /**
-    * @typedef {(apiProviderId: string, requestId: UUID, err: unknown) => void | Promise<void>} ReleaseFailureCallback
+    * @typedef {(apiProviderId: string, requestId: number, err: unknown) => void | Promise<void>} ReleaseFailureCallback
     * @typedef {(err: unknown) => void | Promise<void>} ErrorCallback
     * 
     * @typedef {{ on: Set<ReleaseFailureCallback>, once: Set<ReleaseFailureCallback> }} ReleaseFailureListeners
@@ -12,7 +11,7 @@ import { triggerEvent } from "../../events/triggerEvent.js"
 */
 /** 
     * @param {string} apiProviderId
-    * @param {UUID} requestId
+    * @param {number} requestId
     * @param {ReleaseFailureListeners} releaseFailureListeners
     * @param {ErrorListeners} errorListeners
     * @returns {Promise<void>}
