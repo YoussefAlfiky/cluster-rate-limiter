@@ -85,9 +85,14 @@ export class WorkerSemaphoreLimiter extends BaseWorkerLimiter {
             releasePermitFailure: { on: new Set(), once: new Set() },
             error: { on: new Set(), once: new Set() }
         };
-        const onUnclaimedPermit = /**@param {number} requestId*/(requestId) => {
+        /**
+            * @param {number} apiUniqueNumber
+            * @param {number} requestId 
+        */
+        const onUnclaimedPermit = (apiUniqueNumber, requestId) => {
             releasePermit(
                 apiProviderId, 
+                apiUniqueNumber,
                 requestId, 
                 listenerBuckets.releasePermitFailure, 
                 listenerBuckets.error
@@ -139,7 +144,7 @@ export class WorkerSemaphoreLimiter extends BaseWorkerLimiter {
             this.#didAcknowledgePrimaryMatch = true;
         };
         const requestId = await acquirePermit(
-            this.#apiProviderId, 
+            this._apiUniqueNumber, 
             this.#requestId === this.#MAX_SMI ? this.#requestId = this.#MIN_SMI : ++this.#requestId,
             this.#pendingRequests, 
             this.#permitTimeoutDurationMs
@@ -149,6 +154,7 @@ export class WorkerSemaphoreLimiter extends BaseWorkerLimiter {
         } finally {
             releasePermit(
                 this.#apiProviderId, 
+                this._apiUniqueNumber,
                 requestId, 
                 this.#listenerBuckets.releasePermitFailure, 
                 this.#listenerBuckets.error

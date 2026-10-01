@@ -10,7 +10,7 @@ import { RateLimiterError } from "../../errors/RateLimiterError.js";
     * @param {"semaphore" | "duration"} mode 
     * @param {number} permitTimeoutDurationInSeconds 
     * @param {Map<number, PendingRequestTrackers>} pendingRequestsMap
-    * @param {( (requestId: number) => void ) | null} onUnclaimedPermit
+    * @param {( (apiUniqueNumber: number, requestId: number) => void ) | null} onUnclaimedPermit
 */
 export function validateWorkerLimiter(apiProviderId, mode, permitTimeoutDurationInSeconds, pendingRequestsMap, onUnclaimedPermit) {
     if (!isWorker) {

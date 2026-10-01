@@ -28,6 +28,11 @@ export class PrimarySemaphoreLimiter extends EventListenerRegistry {
         * @type {string}
     */
     #apiProviderId;
+    /**
+        * @readonly
+        * @type {number} 
+    */
+    #apiUniqueNumber = 0 /* temp value till init */;
     /** 
         * @readonly
         * @type {Map<number, Worker>}
@@ -57,7 +62,7 @@ export class PrimarySemaphoreLimiter extends EventListenerRegistry {
     #remainingTokens = 0;
     /** 
         * @param {Worker} worker
-        * @param {{processingRequest: boolean, apiProviderId: string, requestId: number}} message 
+        * @param {{processingRequest: boolean, apiUniqueNumber: number, requestId: number}} message 
         * @param {number} retryCount
     */
     #grantRequest(worker, message, retryCount) {
@@ -74,7 +79,7 @@ export class PrimarySemaphoreLimiter extends EventListenerRegistry {
                             this.#listenerBuckets.grantPermitFailure, 
                             this.#listenerBuckets.error,
                             worker.id,
-                            message.apiProviderId,
+                            this.#apiProviderId,
                             message.requestId,
                             err
                         )
@@ -91,7 +96,7 @@ export class PrimarySemaphoreLimiter extends EventListenerRegistry {
             const worker = this.#clusters.get(clusterId);
             if (!worker) continue;
             this.#incrementWorkerUsage(clusterId, requestId);
-            this.#grantRequest(worker, {processingRequest: true, apiProviderId: this.#apiProviderId, requestId}, 0);
+            this.#grantRequest(worker, {processingRequest: true, apiUniqueNumber: this.#apiUniqueNumber, requestId}, 0);
         };
     };
     /** 
@@ -147,8 +152,11 @@ export class PrimarySemaphoreLimiter extends EventListenerRegistry {
                 this.#decrementWorkerUsage(worker.id, requestId);
             };
         } else if ('acknowledgePrimary' in msg && msg.acknowledgePrimary === "pending") { 
-            worker.send({apiProviderId: this.#apiProviderId, mode: this.#mode}) 
+            worker.send({apiProviderId: this.#apiProviderId, mode: this.#mode, apiUniqueNumber: this.#apiUniqueNumber}); 
         };
+    };
+    get apiProviderId() {
+        return this.#apiProviderId;
     };
     /**
         * Creates a cluster-wide rate limiter.
@@ -180,7 +188,7 @@ export class PrimarySemaphoreLimiter extends EventListenerRegistry {
         this.#remainingTokens = maxConcurrentRequests;
         this.#listenerBuckets = listenerBuckets;
         // Register Limiter and Initiate IPC Listeners
-        registerPrimaryLimiter(apiProviderId, {
+        this.#apiUniqueNumber = registerPrimaryLimiter(apiProviderId, {
             limiter: /**@type {PrimarySemaphoreLimiter}*/(this),
             config: `${maxConcurrentRequests}-${this.#mode}-${undefined}`,
             handleMessage: (worker, msg) => this.#handleWorkerMessage(worker, msg),
@@ -190,7 +198,7 @@ export class PrimarySemaphoreLimiter extends EventListenerRegistry {
         for (const workerId in cluster.workers) {
             const worker = cluster.workers[workerId];
             if (!worker) continue;
-            worker.send({apiProviderId, mode: this.#mode});
+            worker.send({apiProviderId, mode: this.#mode, apiUniqueNumber: this.#apiUniqueNumber});
         };
     };
 };

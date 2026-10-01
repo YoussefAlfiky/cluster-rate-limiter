@@ -1,7 +1,7 @@
 // @ts-check
 import { RateLimiterError } from "../errors/RateLimiterError.js";
 import { validateWorkerLimiter } from "./validators/validateWorkerLimiter.js";
-import { registerWorkerLimiter } from "./registry/registerWorkerLimiter.js";
+import { registerWorkerLimiter, registerLimiterApiUniqueNumber } from "./registry/registerWorkerLimiter.js";
 /**
     * @typedef {{resolve: (requestId: number) => void, reject: (reason?: unknown) => void, timeout: NodeJS.Timeout}} PendingRequestTrackers
     * @typedef {{resolve: () => void, reject: (reason?: unknown) => void, timeout: NodeJS.Timeout}} PrimaryAcknowledgementTrackers
@@ -29,6 +29,7 @@ export class BaseWorkerLimiter {
         * @type {string} 
     */
     #apiProviderId;
+    #apiUniqueNumber = 0 /* temp value till handshake */;
     /** 
         * @readonly
         * @type {Map<number, PendingRequestTrackers>} 
@@ -43,9 +44,10 @@ export class BaseWorkerLimiter {
     #primaryAcknowledgementPromise;
     /** @type {PrimaryAcknowledgementTrackers | null} */
     #primaryAcknowledgementTrackers = null;
-    /** @type {( (requestId: number) => void ) | null}*/
+    /** @type {( (apiUniqueNumber: number, requestId: number) => void ) | null}*/
     #onUnclaimedPermit;
     #didCompletePrimaryHandshake = false;
+    #permitTimeoutDurationInSeconds = 0 /* temp value till init */;
     /** 
         * @param {boolean} isFirstCall 
         * @returns {Promise<void>} 
@@ -94,14 +96,17 @@ export class BaseWorkerLimiter {
             if (!trackers) {
                 // this.#onUnclaimedPermit is always null in duration mode
                 if (this.#onUnclaimedPermit) {
-                    this.#onUnclaimedPermit(requestId);
+                    this.#onUnclaimedPermit(this.#apiUniqueNumber, requestId);
                 };
                 return;
             };
             this.#pendingRequests.delete(requestId);
             clearTimeout(trackers.timeout);
             trackers.resolve(requestId);
-        } else if ( 'mode' in msg && (msg.mode === "semaphore" || msg.mode === "duration") ) {
+        } else if ( 
+            'mode' in msg && (msg.mode === "semaphore" || msg.mode === "duration") 
+            && 'apiUniqueNumber' in msg && typeof msg.apiUniqueNumber === "number"
+        ) {
             if (this.#didCompletePrimaryHandshake) return;
             this.#didCompletePrimaryHandshake = true;
             const modeMismatchError = new RateLimiterError("ERR_MODE_MISMATCH", [
@@ -111,6 +116,15 @@ export class BaseWorkerLimiter {
             ].join('\n'));
             if (!this.#primaryAcknowledgementTrackers) {
                 if (msg.mode === this.#mode) {
+                    registerLimiterApiUniqueNumber(
+                        msg.apiUniqueNumber, 
+                        {
+                            limiter: this,
+                            config: `${this.#mode}-${this.#permitTimeoutDurationInSeconds}`,
+                            handleMessage: (message) => this.#handlePrimaryMessage(message)
+                        }
+                    );
+                    this.#apiUniqueNumber = msg.apiUniqueNumber;
                     this.#primaryAcknowledgementPromise = Promise.resolve();
                 } else {
                     this.#primaryAcknowledgementPromise = Promise.reject(modeMismatchError);
@@ -121,11 +135,27 @@ export class BaseWorkerLimiter {
             const { resolve, reject, timeout } = this.#primaryAcknowledgementTrackers;
             clearTimeout(timeout);
             if (msg.mode === this.#mode) {
+                registerLimiterApiUniqueNumber(
+                    msg.apiUniqueNumber, 
+                    {
+                        limiter: this,
+                        config: `${this.#mode}-${this.#permitTimeoutDurationInSeconds}`,
+                        handleMessage: (message) => this.#handlePrimaryMessage(message)
+                    }
+                );
+                this.#apiUniqueNumber = msg.apiUniqueNumber;
                 resolve();
             } else {
                 reject(modeMismatchError);
             };
         };
+    };
+    /** @protected */
+    get _apiUniqueNumber() {
+        return this.#apiUniqueNumber;
+    };
+    get apiProviderId() {
+        return this.#apiProviderId;
     };
     /**
         * Ensures the primary process has acknowledged and validated this worker's rate limiter configuration.
@@ -173,7 +203,7 @@ export class BaseWorkerLimiter {
         * @param {Map<number, PendingRequestTrackers>} pendingRequests
         * Shared map utilized by subclasses to track pending requests awaiting primary acknowledgment.
         * 
-        * @param {( (requestId: number) => void ) | null} onUnclaimedPermit
+        * @param {( (apiUniqueNumber: number, requestId: number) => void ) | null} onUnclaimedPermit
         * Injected callback to safely release permits that arrive after their local request has timed out. 
         * Required for 'semaphore' mode to release the lock, but explicitly `null` for 'duration' mode.
         * 
@@ -201,11 +231,12 @@ export class BaseWorkerLimiter {
         this.#apiProviderId = apiProviderId;
         this.#pendingRequests = pendingRequests;
         this.#onUnclaimedPermit = onUnclaimedPermit;
+        this.#permitTimeoutDurationInSeconds = permitTimeoutDurationInSeconds;
         // Register Limiter and initiate IPC listeners
         registerWorkerLimiter(apiProviderId, {
             limiter: this,
             config: `${mode}-${permitTimeoutDurationInSeconds}`,
-            handleMessage: /**@param {Object} msg*/(msg) => this.#handlePrimaryMessage(msg)
+            handleMessage: (message) => this.#handlePrimaryMessage(message)
         });
         // start worker-primary handshake
         this.#primaryAcknowledgementPromise = this.#acknowledgePrimary(true);

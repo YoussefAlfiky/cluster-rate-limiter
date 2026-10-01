@@ -11,15 +11,16 @@ import { triggerEvent } from "../../events/triggerEvent.js"
 */
 /** 
     * @param {string} apiProviderId
+    * @param {number} apiUniqueNumber
     * @param {number} requestId
     * @param {ReleaseFailureListeners} releaseFailureListeners
     * @param {ErrorListeners} errorListeners
     * @returns {Promise<void>}
 */
-export function releaseSemaphorePermit(apiProviderId, requestId, releaseFailureListeners, errorListeners) {
+export function releaseSemaphorePermit(apiProviderId, apiUniqueNumber, requestId, releaseFailureListeners, errorListeners) {
     return new Promise((resolve, reject) => {
         const message = {
-            apiProviderId,
+            apiUniqueNumber,
             requestId,
             terminateOneRequest: true
         };

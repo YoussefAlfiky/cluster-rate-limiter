@@ -31,6 +31,11 @@ export class PrimaryDurationLimiter extends EventListenerRegistry {
         * @type {string}
     */
     #apiProviderId;
+    /**
+        * @readonly
+        * @type {number} 
+    */
+    #apiUniqueNumber = 0 /* temp value till init */;
     /** 
         * @readonly
         * @type {Map<number, Worker>}
@@ -95,7 +100,7 @@ export class PrimaryDurationLimiter extends EventListenerRegistry {
                 if (!worker) continue;
                 const timestamp = performance.now();
                 this.#grantTimestampSortedLog.enqueue(timestamp);
-                this.#grantRequest(worker, {processingRequest: true, apiProviderId: this.#apiProviderId, requestId}, timestamp, 0);
+                this.#grantRequest(worker, {processingRequest: true, apiUniqueNumber: this.#apiUniqueNumber, requestId}, timestamp, 0);
             };
         } finally {
             this.#isGrantingPermitsForPendingRequests = false;
@@ -118,7 +123,7 @@ export class PrimaryDurationLimiter extends EventListenerRegistry {
     };
     /** 
         * @param {Worker} worker
-        * @param {{processingRequest: boolean, apiProviderId: string, requestId: number}} message 
+        * @param {{processingRequest: boolean, apiUniqueNumber: number, requestId: number}} message 
         * @param {number} timestamp
         * @param {number} retryCount
     */
@@ -137,7 +142,7 @@ export class PrimaryDurationLimiter extends EventListenerRegistry {
                             this.#listenerBuckets.grantPermitFailure,
                             this.#listenerBuckets.error,
                             worker.id,
-                            message.apiProviderId,
+                            this.#apiProviderId,
                             message.requestId,
                             err
                         )
@@ -164,8 +169,11 @@ export class PrimaryDurationLimiter extends EventListenerRegistry {
                 this.#grantPendingRequests();
             };
         } else if ('acknowledgePrimary' in msg && msg.acknowledgePrimary === "pending") { 
-            worker.send({apiProviderId: this.#apiProviderId, mode: this.#mode}) 
+            worker.send({apiProviderId: this.#apiProviderId, mode: this.#mode, apiUniqueNumber: this.#apiUniqueNumber}) 
         };
+    };
+    get apiProviderId() {
+        return this.#apiProviderId;
     };
     /**
         * Creates a cluster-wide rate limiter.
@@ -202,7 +210,7 @@ export class PrimaryDurationLimiter extends EventListenerRegistry {
         this.#grantTimestampSortedLog = new Float64SortedQueue(maxConcurrentRequests);
         this.#listenerBuckets = listenerBuckets;
         // Register Limiter and Initiate IPC Listeners
-        registerPrimaryLimiter(apiProviderId, {
+        this.#apiUniqueNumber = registerPrimaryLimiter(apiProviderId, {
             limiter: /**@type {PrimaryDurationLimiter}*/(this),
             config: `${maxConcurrentRequests}-${this.#mode}-${durationInSeconds}`,
             handleMessage: (worker, msg) => this.#handleWorkerMessage(worker, msg),
@@ -212,7 +220,7 @@ export class PrimaryDurationLimiter extends EventListenerRegistry {
         for (const workerId in cluster.workers) {
             const worker = cluster.workers[workerId];
             if (!worker) continue;
-            worker.send({apiProviderId, mode: this.#mode});
+            worker.send({apiProviderId, mode: this.#mode, apiUniqueNumber: this.#apiUniqueNumber});
         };
     };
 };

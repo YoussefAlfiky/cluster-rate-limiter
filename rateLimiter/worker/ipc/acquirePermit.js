@@ -5,13 +5,13 @@ import {RateLimiterError} from "../../errors/RateLimiterError.js"
 */
 
 /** 
-    * @param {string} apiProviderId
+    * @param {number} apiUniqueNumber
     * @param {number} requestId
     * @param {Map<number, PendingRequestTrackers>} pendingRequestsMap
     * @param {number} permitTimeoutDurationMs
     * @returns {Promise<number>} 
 */
-export function acquirePermit(apiProviderId, requestId, pendingRequestsMap, permitTimeoutDurationMs) {
+export function acquirePermit(apiUniqueNumber, requestId, pendingRequestsMap, permitTimeoutDurationMs) {
     return new Promise((resolve, reject) => {
         if (!process.send) {
             return reject(new RateLimiterError(
@@ -28,7 +28,7 @@ export function acquirePermit(apiProviderId, requestId, pendingRequestsMap, perm
             };
         }, permitTimeoutDurationMs);
         pendingRequestsMap.set(requestId, {resolve, reject, timeout});
-        process.send({apiProviderId, requestId, askForToken: true}, (err) => {
+        process.send({apiUniqueNumber, requestId, askForToken: true}, (err) => {
             if (err) {
                 pendingRequestsMap.delete(requestId);
                 clearTimeout(timeout);

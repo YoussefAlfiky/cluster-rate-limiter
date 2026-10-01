@@ -19,11 +19,6 @@ import { acquirePermit } from "./ipc/acquirePermit.js"
 */
 export class WorkerDurationLimiter extends BaseWorkerLimiter {
     #didAcknowledgePrimaryMatch = false;
-    /**
-        * @readonly
-        * @type {string} 
-    */
-    #apiProviderId;
     /** 
         * @readonly
         * @type {number} 
@@ -57,7 +52,6 @@ export class WorkerDurationLimiter extends BaseWorkerLimiter {
         /**@type {Map<number, PendingRequestTrackers>}*/
         const pendingRequests = new Map();
         super(apiProviderId, "duration", permitTimeoutDurationInSeconds, pendingRequests, null);
-        this.#apiProviderId = apiProviderId;
         this.#permitTimeoutDurationMs = permitTimeoutDurationInSeconds * 1000;
         this.#pendingRequests = pendingRequests;
     };
@@ -99,7 +93,7 @@ export class WorkerDurationLimiter extends BaseWorkerLimiter {
             this.#didAcknowledgePrimaryMatch = true;
         };
         await acquirePermit(
-            this.#apiProviderId, 
+            this._apiUniqueNumber, 
             this.#requestId === this.#MAX_SMI ? this.#requestId = this.#MIN_SMI : ++this.#requestId,
             this.#pendingRequests, 
             this.#permitTimeoutDurationMs

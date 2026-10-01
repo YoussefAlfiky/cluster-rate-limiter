@@ -7,11 +7,16 @@ import { RateLimiterError } from "../../errors/RateLimiterError.js"
     * @property {string} config
     * @property {(msg: Object) => void} handleMessage
     * 
-    * @typedef {typeof globalThis & { [API_PROVIDERS_REGISTRY_KEY]?: Map<string, WorkerRegistryEntry> }} WorkerGlobalObject
+    * @typedef {typeof globalThis & { 
+    *   [API_PROVIDERS_ID_REGISTRY_KEY]?: Map<string, WorkerRegistryEntry>, 
+    *   [API_PROVIDERS_UNIQUE_NUMBER_REGISTRY_KEY]?: Map<number, WorkerRegistryEntry>
+    * }} WorkerGlobalObject
 */
 
-/**@type {unique symbol}*/
-const API_PROVIDERS_REGISTRY_KEY = Symbol.for('WorkerRateLimiter_ClustersMode:registryMap');
+/** @type {unique symbol} */
+const API_PROVIDERS_ID_REGISTRY_KEY = Symbol.for('PrimaryRateLimiter_ClustersMode:apiProviderIdRegistry_Map');
+/** @type {unique symbol} */
+const API_PROVIDERS_UNIQUE_NUMBER_REGISTRY_KEY = Symbol.for('PrimaryRateLimiter_ClustersMode:apiProviderUniqueNumberRegistry_Map');
 
 /**
     * @param {string} apiProviderId
@@ -25,13 +30,19 @@ export function registerWorkerLimiter(apiProviderId, registryEntry) {
         );
     };
     const globalObject = /**@type {WorkerGlobalObject}*/(globalThis);
-    const limitersRegistry = globalObject[API_PROVIDERS_REGISTRY_KEY];
+    const limitersRegistry = globalObject[API_PROVIDERS_ID_REGISTRY_KEY];
     if (!limitersRegistry) {
-        globalObject[API_PROVIDERS_REGISTRY_KEY] = new Map([[apiProviderId, registryEntry]]);
+        globalObject[API_PROVIDERS_ID_REGISTRY_KEY] = new Map([[apiProviderId, registryEntry]]);
+        globalObject[API_PROVIDERS_UNIQUE_NUMBER_REGISTRY_KEY] = new Map();
         process.on("message", (msg) => {
-            if (msg && typeof msg === "object" && 'apiProviderId' in msg && typeof msg.apiProviderId === "string") {
-                const entry = globalObject[API_PROVIDERS_REGISTRY_KEY]?.get(msg.apiProviderId);
-                if (entry) entry.handleMessage(msg);
+            if (msg && typeof msg === "object") {
+                if ('apiUniqueNumber' in msg && typeof msg.apiUniqueNumber === "number") {
+                    const entry = globalObject[API_PROVIDERS_UNIQUE_NUMBER_REGISTRY_KEY]?.get(msg.apiUniqueNumber);
+                    if (entry) entry.handleMessage(msg);
+                } else if ('apiProviderId' in msg && typeof msg.apiProviderId === "string") {
+                    const entry = globalObject[API_PROVIDERS_ID_REGISTRY_KEY]?.get(msg.apiProviderId);
+                    if (entry) entry.handleMessage(msg);
+                }
             };
         });
     } else {
@@ -42,5 +53,19 @@ export function registerWorkerLimiter(apiProviderId, registryEntry) {
             );
         }
         limitersRegistry.set(apiProviderId, registryEntry);
+    };
+};
+
+/**
+    * @param {number} apiUniqueNumber
+    * @param {WorkerRegistryEntry} registryEntry
+*/
+export function registerLimiterApiUniqueNumber(apiUniqueNumber, registryEntry) {
+    const globalObject = /**@type {WorkerGlobalObject}*/(globalThis);
+    const limiterRegistry = globalObject[API_PROVIDERS_UNIQUE_NUMBER_REGISTRY_KEY];
+    if (!limiterRegistry) {
+        globalObject[API_PROVIDERS_UNIQUE_NUMBER_REGISTRY_KEY] = new Map([[apiUniqueNumber, registryEntry]]);
+    } else {
+        limiterRegistry.set(apiUniqueNumber, registryEntry);
     };
 };
