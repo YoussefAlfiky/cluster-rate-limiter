@@ -38,8 +38,9 @@ export function registerWorkerLimiter(apiProviderId, registryEntry) {
             if (msg && typeof msg === "object") {
                 if ('apiUniqueNumber' in msg && typeof msg.apiUniqueNumber === "number") {
                     const entry = globalObject[API_PROVIDERS_UNIQUE_NUMBER_REGISTRY_KEY]?.get(msg.apiUniqueNumber);
-                    if (entry) entry.handleMessage(msg);
-                } else if ('apiProviderId' in msg && typeof msg.apiProviderId === "string") {
+                    if (entry) return entry.handleMessage(msg);
+                };
+                if ('apiProviderId' in msg && typeof msg.apiProviderId === "string") {
                     const entry = globalObject[API_PROVIDERS_ID_REGISTRY_KEY]?.get(msg.apiProviderId);
                     if (entry) entry.handleMessage(msg);
                 }
