@@ -14,9 +14,9 @@ import { RateLimiterError } from "../../errors/RateLimiterError.js"
 */
 
 /** @type {unique symbol} */
-const API_PROVIDERS_ID_REGISTRY_KEY = Symbol.for('PrimaryRateLimiter_ClustersMode:apiProviderIdRegistry_Map');
+const API_PROVIDERS_ID_REGISTRY_KEY = Symbol.for('WorkerRateLimiter_ClustersMode:apiProviderIdRegistry_Map');
 /** @type {unique symbol} */
-const API_PROVIDERS_UNIQUE_NUMBER_REGISTRY_KEY = Symbol.for('PrimaryRateLimiter_ClustersMode:apiProviderUniqueNumberRegistry_Map');
+const API_PROVIDERS_UNIQUE_NUMBER_REGISTRY_KEY = Symbol.for('WorkerRateLimiter_ClustersMode:apiProviderUniqueNumberRegistry_Map');
 
 /**
     * @param {string} apiProviderId
