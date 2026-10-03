@@ -4,7 +4,7 @@ import { Queue } from "../../lib/Queue.js";
 import { validatePrimaryLimiterConstructorInput } from "./validators/validatePrimaryLimiter.js";
 import { registerPrimaryLimiter } from "./registry/registerPrimaryLimiter.js";
 import { EventListenerRegistry } from "../events/EventListenerRegistry.js";
-import { triggerEvent } from "../events/triggerEvent.js"
+import { triggerEvent, emitSafeError } from "../events/triggerEvent.js"
 
 /**
     * @typedef {import("node:cluster").Worker} Worker
@@ -75,14 +75,16 @@ export class PrimarySemaphoreLimiter extends EventListenerRegistry {
                         setTimeout(() => this.#grantRequest(worker, message, retryCount + 1), 50);
                     } else {
                         this.#decrementWorkerUsage(worker.id, message.requestId);
-                        triggerEvent(
+                        if (!triggerEvent(
                             this.#listenerBuckets.grantPermitFailure, 
                             this.#listenerBuckets.error,
                             worker.id,
                             this.#apiProviderId,
                             message.requestId,
                             err
-                        )
+                        )) {
+                            emitSafeError(this.#listenerBuckets.error, err);
+                        }
                     };
                 };
             };

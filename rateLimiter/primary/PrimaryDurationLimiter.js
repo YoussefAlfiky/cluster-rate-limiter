@@ -7,7 +7,7 @@ import { Float64SortedQueue } from "../../lib/Float64SortedQueue.js";
 import { validatePrimaryLimiterConstructorInput } from "./validators/validatePrimaryLimiter.js";
 import { registerPrimaryLimiter } from "./registry/registerPrimaryLimiter.js";
 import { EventListenerRegistry } from "../events/EventListenerRegistry.js";
-import { triggerEvent } from "../events/triggerEvent.js"
+import { triggerEvent, emitSafeError } from "../events/triggerEvent.js"
 
 /**
     * @typedef {import("node:cluster").Worker} Worker
@@ -138,14 +138,16 @@ export class PrimaryDurationLimiter extends EventListenerRegistry {
                         setTimeout(() => this.#grantRequest(worker, message, timestamp, retryCount + 1), 50);
                     } else {
                         this.#refundSlot(timestamp);
-                        triggerEvent(
+                        if (!triggerEvent(
                             this.#listenerBuckets.grantPermitFailure,
                             this.#listenerBuckets.error,
                             worker.id,
                             this.#apiProviderId,
                             message.requestId,
                             err
-                        )
+                        )) {
+                            emitSafeError(this.#listenerBuckets.error, err);
+                        }
                     };
                 };
             };

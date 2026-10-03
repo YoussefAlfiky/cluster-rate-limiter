@@ -1,6 +1,6 @@
 //@ts-check
 import { RateLimiterError } from "../../errors/RateLimiterError.js";
-import { triggerEvent } from "../../events/triggerEvent.js"
+import { triggerEvent, emitSafeError } from "../../events/triggerEvent.js"
 
 /**
     * @typedef {(apiProviderId: string, requestId: number, err: unknown) => void | Promise<void>} ReleaseFailureCallback
@@ -30,13 +30,17 @@ export function releaseSemaphorePermit(apiProviderId, apiUniqueNumber, requestId
                     "ERR_IPC_CHANNEL_CLOSED", 
                     "Cannot release permit: The IPC channel is closed. The worker may be disconnected or orphaned."
                 );
-                triggerEvent(releaseFailureListeners, errorListeners, apiProviderId, requestId, err);
+                if (!triggerEvent(releaseFailureListeners, errorListeners, apiProviderId, requestId, err)) {
+                    emitSafeError(errorListeners, err);
+                }
                 return reject(err);
             };
             process.send(message, (err) => {
                 if (err) {
                     if (retryCount > 3) {
-                        triggerEvent(releaseFailureListeners, errorListeners, apiProviderId, requestId, err);
+                        if (!triggerEvent(releaseFailureListeners, errorListeners, apiProviderId, requestId, err)) {
+                            emitSafeError(errorListeners, err);
+                        }
                         reject(err);
                     } else {
                         setTimeout(() => {
