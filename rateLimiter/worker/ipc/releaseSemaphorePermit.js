@@ -1,6 +1,7 @@
 //@ts-check
 import { RateLimiterError } from "../../errors/RateLimiterError.js";
 import { triggerEvent, emitSafeError } from "../../events/triggerEvent.js"
+import { IPC_OPCODES, IPC_SIGNATURE,  } from "../../shared/ipc-protocol.js";
 
 /**
     * @typedef {(apiProviderId: string, requestId: number, err: unknown) => void | Promise<void>} ReleaseFailureCallback
@@ -19,11 +20,7 @@ import { triggerEvent, emitSafeError } from "../../events/triggerEvent.js"
 */
 export function releaseSemaphorePermit(apiProviderId, apiUniqueNumber, requestId, releaseFailureListeners, errorListeners) {
     return new Promise((resolve, reject) => {
-        const message = {
-            apiUniqueNumber,
-            requestId,
-            terminateOneRequest: true
-        };
+        const message = [IPC_SIGNATURE, apiUniqueNumber, IPC_OPCODES.RELEASE, requestId];
         const sendPermitTermination = /** @param {number} retryCount */(retryCount) => {
             if (!process.send) {
                 const err = new RateLimiterError(

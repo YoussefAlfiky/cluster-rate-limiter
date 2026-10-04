@@ -1,5 +1,6 @@
 //@ts-check
 import { RateLimiterError } from "../../errors/RateLimiterError.js"
+import { IPC_SIGNATURE, IPC_MESSAGE_LENGTH, IPC_INDEX } from "../../shared/ipc-protocol.js";
 
 /**
     * @typedef {Object} WorkerRegistryEntry
@@ -35,11 +36,17 @@ export function registerWorkerLimiter(apiProviderId, registryEntry) {
         globalObject[API_PROVIDERS_ID_REGISTRY_KEY] = new Map([[apiProviderId, registryEntry]]);
         globalObject[API_PROVIDERS_UNIQUE_NUMBER_REGISTRY_KEY] = new Map();
         process.on("message", (msg) => {
+            // Hot Path (Executes 99.99% of the time)
+            if (Array.isArray(msg)) {
+                if (msg.length === IPC_MESSAGE_LENGTH && msg[IPC_INDEX.SIGNATURE] === IPC_SIGNATURE) {
+                    const apiUniqueNumber = msg[IPC_INDEX.DESTINATION];
+                    const entry = globalObject[API_PROVIDERS_UNIQUE_NUMBER_REGISTRY_KEY]?.get(apiUniqueNumber);
+                    if (entry) entry.handleMessage(msg);
+                }
+                return;
+            };
+            // Cold Path (Boot-time handshakes)
             if (msg && typeof msg === "object") {
-                if ('apiUniqueNumber' in msg && typeof msg.apiUniqueNumber === "number") {
-                    const entry = globalObject[API_PROVIDERS_UNIQUE_NUMBER_REGISTRY_KEY]?.get(msg.apiUniqueNumber);
-                    if (entry) return entry.handleMessage(msg);
-                };
                 if ('apiProviderId' in msg && typeof msg.apiProviderId === "string") {
                     const entry = globalObject[API_PROVIDERS_ID_REGISTRY_KEY]?.get(msg.apiProviderId);
                     if (entry) entry.handleMessage(msg);

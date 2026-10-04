@@ -5,6 +5,7 @@ import { validatePrimaryLimiterConstructorInput } from "./validators/validatePri
 import { registerPrimaryLimiter } from "./registry/registerPrimaryLimiter.js";
 import { EventListenerRegistry } from "../events/EventListenerRegistry.js";
 import { triggerEvent, emitSafeError } from "../events/triggerEvent.js"
+import { IPC_SIGNATURE, IPC_OPCODES , IPC_INDEX } from "../shared/ipc-protocol.js";
 
 /**
     * @typedef {import("node:cluster").Worker} Worker
@@ -62,7 +63,7 @@ export class PrimarySemaphoreLimiter extends EventListenerRegistry {
     #remainingTokens = 0;
     /** 
         * @param {Worker} worker
-        * @param {{processingRequest: boolean, apiUniqueNumber: number, requestId: number}} message 
+        * @param {number[]} message 
         * @param {number} retryCount
     */
     #grantRequest(worker, message, retryCount) {
@@ -74,13 +75,14 @@ export class PrimarySemaphoreLimiter extends EventListenerRegistry {
                     if (retryCount < 3) {
                         setTimeout(() => this.#grantRequest(worker, message, retryCount + 1), 50);
                     } else {
-                        this.#decrementWorkerUsage(worker.id, message.requestId);
+                        const requestId = message[IPC_INDEX.PAYLOAD];
+                        this.#decrementWorkerUsage(worker.id, requestId);
                         if (!triggerEvent(
                             this.#listenerBuckets.grantPermitFailure, 
                             this.#listenerBuckets.error,
                             worker.id,
                             this.#apiProviderId,
-                            message.requestId,
+                            requestId,
                             err
                         )) {
                             emitSafeError(this.#listenerBuckets.error, err);
@@ -98,7 +100,7 @@ export class PrimarySemaphoreLimiter extends EventListenerRegistry {
             const worker = this.#clusters.get(clusterId);
             if (!worker) continue;
             this.#incrementWorkerUsage(clusterId, requestId);
-            this.#grantRequest(worker, {processingRequest: true, apiUniqueNumber: this.#apiUniqueNumber, requestId}, 0);
+            this.#grantRequest(worker, [IPC_SIGNATURE, this.#apiUniqueNumber, IPC_OPCODES.GRANT, requestId], 0);
         };
     };
     /** 
@@ -144,17 +146,21 @@ export class PrimarySemaphoreLimiter extends EventListenerRegistry {
         * @param {Object} msg 
     */
     #handleWorkerMessage(worker, msg) {
-        if ('requestId' in msg && typeof msg.requestId === "number") {
-            const requestId = msg.requestId;
-            if ('askForToken' in msg && msg.askForToken === true) {
+        if (Array.isArray(msg)) {
+            const opCode = msg[IPC_INDEX.OPCODE];
+            if (opCode === IPC_OPCODES.ACQUIRE) {
+                const requestId = msg[IPC_INDEX.PAYLOAD];
                 this.#requestsQueue.enqueue({clusterId: worker.id, requestId});
                 this.#clusters.set(worker.id, worker);
                 this.#grantPendingRequests();
-            } else if ('terminateOneRequest' in msg && msg.terminateOneRequest === true) {
+            } else if (opCode === IPC_OPCODES.RELEASE) {
+                const requestId = msg[IPC_INDEX.PAYLOAD];
                 this.#decrementWorkerUsage(worker.id, requestId);
             };
-        } else if ('acknowledgePrimary' in msg && msg.acknowledgePrimary === "pending") { 
-            worker.send({apiProviderId: this.#apiProviderId, mode: this.#mode, apiUniqueNumber: this.#apiUniqueNumber}); 
+            return;
+        };
+        if ('acknowledgePrimary' in msg && msg.acknowledgePrimary === "pending") {
+            worker.send({apiProviderId: this.#apiProviderId, mode: this.#mode, apiUniqueNumber: this.#apiUniqueNumber});
         };
     };
     get apiProviderId() {

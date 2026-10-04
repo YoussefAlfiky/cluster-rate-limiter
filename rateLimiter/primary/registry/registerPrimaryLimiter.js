@@ -1,6 +1,7 @@
 // @ts-check
 import cluster from "node:cluster";
 import { RateLimiterError } from "../../errors/RateLimiterError.js";
+import { IPC_SIGNATURE, IPC_MESSAGE_LENGTH, IPC_INDEX } from "../../shared/ipc-protocol.js";
 
 /**
     * @typedef {Object} PrimaryRegistryEntry
@@ -47,11 +48,18 @@ export function registerPrimaryLimiter(apiProviderId, registryEntry) {
         globalObject[API_PROVIDERS_ID_REGISTRY_KEY] = new Map([[apiProviderId, registryEntry]]);
         globalObject[API_PROVIDERS_UNIQUE_NUMBER_REGISTRY_KEY] = new Map([[1, registryEntry]]);
         cluster.on("message", (worker, msg) => {
-            if (msg && typeof msg === "object") {
-                if ('apiUniqueNumber' in msg && typeof msg.apiUniqueNumber === "number") {
-                    const entry = globalObject[API_PROVIDERS_UNIQUE_NUMBER_REGISTRY_KEY]?.get(msg.apiUniqueNumber);
+            // Hot Path (Executes 99.99% of the time)
+            if (Array.isArray(msg)) {
+                if (msg.length === IPC_MESSAGE_LENGTH && msg[IPC_INDEX.SIGNATURE] === IPC_SIGNATURE) {
+                    const apiUniqueNumber = msg[IPC_INDEX.DESTINATION];
+                    const entry = globalObject[API_PROVIDERS_UNIQUE_NUMBER_REGISTRY_KEY]?.get(apiUniqueNumber);
                     if (entry) entry.handleMessage(worker, msg);
-                } else if ('apiProviderId' in msg && typeof msg.apiProviderId === "string") {
+                };
+                return;
+            }
+            // Cold Path (Boot-time handshakes)
+            if (msg && typeof msg === "object") {
+                if ('apiProviderId' in msg && typeof msg.apiProviderId === "string") {
                     const entry = globalObject[API_PROVIDERS_ID_REGISTRY_KEY]?.get(msg.apiProviderId);
                     if (entry) entry.handleMessage(worker, msg);
                 }

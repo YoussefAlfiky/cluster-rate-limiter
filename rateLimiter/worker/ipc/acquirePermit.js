@@ -1,5 +1,6 @@
 //@ts-check
 import {RateLimiterError} from "../../errors/RateLimiterError.js"
+import { IPC_SIGNATURE, IPC_OPCODES } from "../../shared/ipc-protocol.js";
 /**
     * @typedef {{resolve: (requestId: number) => void, reject: (reason?: unknown) => void, timeout: NodeJS.Timeout}} PendingRequestTrackers 
 */
@@ -28,7 +29,7 @@ export function acquirePermit(apiUniqueNumber, requestId, pendingRequestsMap, pe
             };
         }, permitTimeoutDurationMs);
         pendingRequestsMap.set(requestId, {resolve, reject, timeout});
-        process.send({apiUniqueNumber, requestId, askForToken: true}, (err) => {
+        process.send([IPC_SIGNATURE, apiUniqueNumber, IPC_OPCODES.ACQUIRE, requestId], (err) => {
             if (err) {
                 pendingRequestsMap.delete(requestId);
                 clearTimeout(timeout);

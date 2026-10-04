@@ -8,6 +8,7 @@ import { validatePrimaryLimiterConstructorInput } from "./validators/validatePri
 import { registerPrimaryLimiter } from "./registry/registerPrimaryLimiter.js";
 import { EventListenerRegistry } from "../events/EventListenerRegistry.js";
 import { triggerEvent, emitSafeError } from "../events/triggerEvent.js"
+import { IPC_SIGNATURE, IPC_OPCODES, IPC_INDEX } from "../shared/ipc-protocol.js";
 
 /**
     * @typedef {import("node:cluster").Worker} Worker
@@ -100,7 +101,7 @@ export class PrimaryDurationLimiter extends EventListenerRegistry {
                 if (!worker) continue;
                 const timestamp = performance.now();
                 this.#grantTimestampSortedLog.enqueue(timestamp);
-                this.#grantRequest(worker, {processingRequest: true, apiUniqueNumber: this.#apiUniqueNumber, requestId}, timestamp, 0);
+                this.#grantRequest(worker, [IPC_SIGNATURE, this.#apiUniqueNumber, IPC_OPCODES.GRANT, requestId], timestamp, 0);
             };
         } finally {
             this.#isGrantingPermitsForPendingRequests = false;
@@ -123,7 +124,7 @@ export class PrimaryDurationLimiter extends EventListenerRegistry {
     };
     /** 
         * @param {Worker} worker
-        * @param {{processingRequest: boolean, apiUniqueNumber: number, requestId: number}} message 
+        * @param {number[]} message 
         * @param {number} timestamp
         * @param {number} retryCount
     */
@@ -143,7 +144,7 @@ export class PrimaryDurationLimiter extends EventListenerRegistry {
                             this.#listenerBuckets.error,
                             worker.id,
                             this.#apiProviderId,
-                            message.requestId,
+                            message[IPC_INDEX.PAYLOAD] /*request id*/,
                             err
                         )) {
                             emitSafeError(this.#listenerBuckets.error, err);
@@ -163,15 +164,18 @@ export class PrimaryDurationLimiter extends EventListenerRegistry {
         * @param {Object} msg 
     */
     #handleWorkerMessage(worker, msg) {
-        if ('requestId' in msg && typeof msg.requestId === "number") {
-            const requestId = msg.requestId;
-            if ('askForToken' in msg && msg.askForToken === true) {
+        if (Array.isArray(msg)) {
+            const opCode = msg[IPC_INDEX.OPCODE];
+            if (opCode === IPC_OPCODES.ACQUIRE) {
+                const requestId = msg[IPC_INDEX.PAYLOAD]
                 this.#requestsQueue.enqueue({clusterId: worker.id, requestId});
                 this.#clusters.set(worker.id, worker);
                 this.#grantPendingRequests();
             };
-        } else if ('acknowledgePrimary' in msg && msg.acknowledgePrimary === "pending") { 
-            worker.send({apiProviderId: this.#apiProviderId, mode: this.#mode, apiUniqueNumber: this.#apiUniqueNumber}) 
+            return;
+        };
+        if ('acknowledgePrimary' in msg && msg.acknowledgePrimary === "pending") {
+            worker.send({apiProviderId: this.#apiProviderId, mode: this.#mode, apiUniqueNumber: this.#apiUniqueNumber});
         };
     };
     get apiProviderId() {

@@ -2,6 +2,7 @@
 import { RateLimiterError } from "../errors/RateLimiterError.js";
 import { validateWorkerLimiter } from "./validators/validateWorkerLimiter.js";
 import { registerWorkerLimiter, registerLimiterApiUniqueNumber } from "./registry/registerWorkerLimiter.js";
+import { IPC_OPCODES, IPC_INDEX } from "../shared/ipc-protocol.js";
 /**
     * @typedef {{resolve: (requestId: number) => void, reject: (reason?: unknown) => void, timeout: NodeJS.Timeout}} PendingRequestTrackers
     * @typedef {{resolve: () => void, reject: (reason?: unknown) => void, timeout: NodeJS.Timeout}} PrimaryAcknowledgementTrackers
@@ -86,24 +87,25 @@ export class BaseWorkerLimiter {
     };
     /**@param {Object} msg */
     #handlePrimaryMessage(msg) {
-        if (
-            'processingRequest' in msg && msg.processingRequest === true 
-            && 
-            'requestId' in msg && typeof msg.requestId === "number"
-        ) {
-            const requestId = msg.requestId;
-            const trackers = this.#pendingRequests.get(requestId);
-            if (!trackers) {
-                // this.#onUnclaimedPermit is always null in duration mode
-                if (this.#onUnclaimedPermit) {
-                    this.#onUnclaimedPermit(this.#apiUniqueNumber, requestId);
+        if (Array.isArray(msg)) {
+            const opCode = msg[IPC_INDEX.OPCODE];
+            if (opCode === IPC_OPCODES.GRANT) {
+                const requestId = msg[IPC_INDEX.PAYLOAD];
+                const trackers = this.#pendingRequests.get(requestId);
+                if (!trackers) {
+                    // this.#onUnclaimedPermit is always null in duration mode
+                    if (this.#onUnclaimedPermit) {
+                        this.#onUnclaimedPermit(this.#apiUniqueNumber, requestId);
+                    };
+                    return;
                 };
-                return;
+                this.#pendingRequests.delete(requestId);
+                clearTimeout(trackers.timeout);
+                trackers.resolve(requestId);
             };
-            this.#pendingRequests.delete(requestId);
-            clearTimeout(trackers.timeout);
-            trackers.resolve(requestId);
-        } else if ( 
+            return;
+        };
+        if ( 
             'mode' in msg && (msg.mode === "semaphore" || msg.mode === "duration") 
             && 'apiUniqueNumber' in msg && typeof msg.apiUniqueNumber === "number"
         ) {
