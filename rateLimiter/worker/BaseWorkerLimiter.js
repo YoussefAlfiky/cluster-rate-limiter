@@ -85,26 +85,26 @@ export class BaseWorkerLimiter {
             });
         });
     };
-    /**@param {Object} msg */
-    #handlePrimaryMessage(msg) {
-        if (Array.isArray(msg)) {
-            const opCode = msg[IPC_INDEX.OPCODE];
-            if (opCode === IPC_OPCODES.GRANT) {
-                const requestId = msg[IPC_INDEX.PAYLOAD];
-                const trackers = this.#pendingRequests.get(requestId);
-                if (!trackers) {
-                    // this.#onUnclaimedPermit is always null in duration mode
-                    if (this.#onUnclaimedPermit) {
-                        this.#onUnclaimedPermit(this.#apiUniqueNumber, requestId);
-                    };
-                    return;
+    /**@param {number[]} msg */
+    #handleHotMessage(msg) {
+        const opCode = msg[IPC_INDEX.OPCODE];
+        if (opCode === IPC_OPCODES.GRANT) {
+            const requestId = msg[IPC_INDEX.PAYLOAD];
+            const trackers = this.#pendingRequests.get(requestId);
+            if (!trackers) {
+                // this.#onUnclaimedPermit is always null in duration mode
+                if (this.#onUnclaimedPermit) {
+                    this.#onUnclaimedPermit(this.#apiUniqueNumber, requestId);
                 };
-                this.#pendingRequests.delete(requestId);
-                clearTimeout(trackers.timeout);
-                trackers.resolve(requestId);
+                return;
             };
-            return;
+            this.#pendingRequests.delete(requestId);
+            clearTimeout(trackers.timeout);
+            trackers.resolve(requestId);
         };
+    };
+    /**@param {Object} msg */
+    #handleColdMessage(msg) {
         if ( 
             'mode' in msg && (msg.mode === "semaphore" || msg.mode === "duration") 
             && 'apiUniqueNumber' in msg && typeof msg.apiUniqueNumber === "number"
@@ -123,7 +123,8 @@ export class BaseWorkerLimiter {
                         {
                             limiter: this,
                             config: `${this.#mode}-${this.#permitTimeoutDurationInSeconds}`,
-                            handleMessage: (message) => this.#handlePrimaryMessage(message)
+                            handleHotMessage: (message) => this.#handleHotMessage(message),
+                            handleColdMessage: (message) => this.#handleColdMessage(message)
                         }
                     );
                     this.#apiUniqueNumber = msg.apiUniqueNumber;
@@ -142,7 +143,8 @@ export class BaseWorkerLimiter {
                     {
                         limiter: this,
                         config: `${this.#mode}-${this.#permitTimeoutDurationInSeconds}`,
-                        handleMessage: (message) => this.#handlePrimaryMessage(message)
+                        handleHotMessage: (message) => this.#handleHotMessage(message),
+                        handleColdMessage: (message) => this.#handleColdMessage(message)
                     }
                 );
                 this.#apiUniqueNumber = msg.apiUniqueNumber;
@@ -238,7 +240,8 @@ export class BaseWorkerLimiter {
         registerWorkerLimiter(apiProviderId, {
             limiter: this,
             config: `${mode}-${permitTimeoutDurationInSeconds}`,
-            handleMessage: (message) => this.#handlePrimaryMessage(message)
+            handleHotMessage: (message) => this.#handleHotMessage(message),
+            handleColdMessage: (message) => this.#handleColdMessage(message)
         });
         // start worker-primary handshake
         this.#primaryAcknowledgementPromise = this.#acknowledgePrimary(true);

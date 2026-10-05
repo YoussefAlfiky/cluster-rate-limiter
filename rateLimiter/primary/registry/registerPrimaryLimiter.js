@@ -4,10 +4,13 @@ import { RateLimiterError } from "../../errors/RateLimiterError.js";
 import { IPC_SIGNATURE, IPC_MESSAGE_LENGTH, IPC_INDEX } from "../../shared/ipc-protocol.js";
 
 /**
+    * @typedef {import("node:cluster").Worker} Worker 
+    * 
     * @typedef {Object} PrimaryRegistryEntry
     * @property {Object} limiter
     * @property {string} config
-    * @property {(worker: import('node:cluster').Worker, msg: Object) => void} handleMessage
+    * @property {(worker: Worker, msg: number[]) => void} handleHotMessage
+    * @property {(worker: Worker, msg: Object) => void} handleColdMessage
     * @property {(workerId: number) => void} handleExit
     * 
     * @typedef {typeof globalThis & { 
@@ -53,7 +56,7 @@ export function registerPrimaryLimiter(apiProviderId, registryEntry) {
                 if (msg.length === IPC_MESSAGE_LENGTH && msg[IPC_INDEX.SIGNATURE] === IPC_SIGNATURE) {
                     const apiUniqueNumber = msg[IPC_INDEX.DESTINATION];
                     const entry = globalObject[API_PROVIDERS_UNIQUE_NUMBER_REGISTRY_KEY]?.get(apiUniqueNumber);
-                    if (entry) entry.handleMessage(worker, msg);
+                    if (entry) entry.handleHotMessage(worker, msg);
                 };
                 return;
             }
@@ -61,7 +64,7 @@ export function registerPrimaryLimiter(apiProviderId, registryEntry) {
             if (msg && typeof msg === "object") {
                 if ('apiProviderId' in msg && typeof msg.apiProviderId === "string") {
                     const entry = globalObject[API_PROVIDERS_ID_REGISTRY_KEY]?.get(msg.apiProviderId);
-                    if (entry) entry.handleMessage(worker, msg);
+                    if (entry) entry.handleColdMessage(worker, msg);
                 }
             }
         });

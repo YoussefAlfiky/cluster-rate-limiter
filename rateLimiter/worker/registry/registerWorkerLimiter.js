@@ -6,7 +6,8 @@ import { IPC_SIGNATURE, IPC_MESSAGE_LENGTH, IPC_INDEX } from "../../shared/ipc-p
     * @typedef {Object} WorkerRegistryEntry
     * @property {Object} limiter
     * @property {string} config
-    * @property {(msg: Object) => void} handleMessage
+    * @property {(msg: number[]) => void} handleHotMessage
+    * @property {(msg: Object) => void} handleColdMessage
     * 
     * @typedef {typeof globalThis & { 
     *   [API_PROVIDERS_ID_REGISTRY_KEY]?: Map<string, WorkerRegistryEntry>, 
@@ -41,7 +42,7 @@ export function registerWorkerLimiter(apiProviderId, registryEntry) {
                 if (msg.length === IPC_MESSAGE_LENGTH && msg[IPC_INDEX.SIGNATURE] === IPC_SIGNATURE) {
                     const apiUniqueNumber = msg[IPC_INDEX.DESTINATION];
                     const entry = globalObject[API_PROVIDERS_UNIQUE_NUMBER_REGISTRY_KEY]?.get(apiUniqueNumber);
-                    if (entry) entry.handleMessage(msg);
+                    if (entry) entry.handleHotMessage(msg);
                 }
                 return;
             };
@@ -49,7 +50,7 @@ export function registerWorkerLimiter(apiProviderId, registryEntry) {
             if (msg && typeof msg === "object") {
                 if ('apiProviderId' in msg && typeof msg.apiProviderId === "string") {
                     const entry = globalObject[API_PROVIDERS_ID_REGISTRY_KEY]?.get(msg.apiProviderId);
-                    if (entry) entry.handleMessage(msg);
+                    if (entry) entry.handleColdMessage(msg);
                 }
             };
         });

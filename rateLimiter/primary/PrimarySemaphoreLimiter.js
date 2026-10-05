@@ -143,22 +143,24 @@ export class PrimarySemaphoreLimiter extends EventListenerRegistry {
     };
     /** 
         * @param {Worker} worker
+        * @param {number[]} msg 
+    */
+    #handleHotMessage(worker, msg) {
+        const requestId = msg[IPC_INDEX.PAYLOAD];
+        const opCode = msg[IPC_INDEX.OPCODE];
+        if (opCode === IPC_OPCODES.ACQUIRE) {
+            this.#requestsQueue.enqueue({clusterId: worker.id, requestId});
+            this.#clusters.set(worker.id, worker);
+            this.#grantPendingRequests();
+        } else if (opCode === IPC_OPCODES.RELEASE) {
+            this.#decrementWorkerUsage(worker.id, requestId);
+        };
+    };
+    /** 
+        * @param {Worker} worker
         * @param {Object} msg 
     */
-    #handleWorkerMessage(worker, msg) {
-        if (Array.isArray(msg)) {
-            const opCode = msg[IPC_INDEX.OPCODE];
-            if (opCode === IPC_OPCODES.ACQUIRE) {
-                const requestId = msg[IPC_INDEX.PAYLOAD];
-                this.#requestsQueue.enqueue({clusterId: worker.id, requestId});
-                this.#clusters.set(worker.id, worker);
-                this.#grantPendingRequests();
-            } else if (opCode === IPC_OPCODES.RELEASE) {
-                const requestId = msg[IPC_INDEX.PAYLOAD];
-                this.#decrementWorkerUsage(worker.id, requestId);
-            };
-            return;
-        };
+    #handleColdMessage(worker, msg) {
         if ('acknowledgePrimary' in msg && msg.acknowledgePrimary === "pending") {
             worker.send({apiProviderId: this.#apiProviderId, mode: this.#mode, apiUniqueNumber: this.#apiUniqueNumber});
         };
@@ -199,7 +201,8 @@ export class PrimarySemaphoreLimiter extends EventListenerRegistry {
         this.#apiUniqueNumber = registerPrimaryLimiter(apiProviderId, {
             limiter: /**@type {PrimarySemaphoreLimiter}*/(this),
             config: `${maxConcurrentRequests}-${this.#mode}-${undefined}`,
-            handleMessage: (worker, msg) => this.#handleWorkerMessage(worker, msg),
+            handleHotMessage: (worker, msg) => this.#handleHotMessage(worker, msg),
+            handleColdMessage: (worker, msg) => this.#handleColdMessage(worker, msg),
             handleExit: (workerId) => this.#handleWorkerExit(workerId)
         });
         // Execute Proactive Primary-Workers Handshake
