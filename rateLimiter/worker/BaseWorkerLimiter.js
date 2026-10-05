@@ -1,7 +1,7 @@
 // @ts-check
 import { RateLimiterError } from "../errors/RateLimiterError.js";
 import { validateWorkerLimiter } from "./validators/validateWorkerLimiter.js";
-import { registerBaseWorkerLimiter, registerWorkerLimiter } from "./registry/registerWorkerLimiter.js";
+import { registerBaseWorkerLimiter, registerWorkerLimiter } from "./registry/workerLimiterRegistry.js";
 import { IPC_OPCODES, IPC_INDEX } from "../shared/ipc-protocol.js";
 /**
     * @typedef {{resolve: (requestId: number) => void, reject: (reason?: unknown) => void, timeout: NodeJS.Timeout}} PendingRequestTrackers
