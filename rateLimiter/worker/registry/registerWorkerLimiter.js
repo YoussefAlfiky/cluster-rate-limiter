@@ -3,15 +3,18 @@ import { RateLimiterError } from "../../errors/RateLimiterError.js"
 import { IPC_SIGNATURE, IPC_MESSAGE_LENGTH, IPC_INDEX } from "../../shared/ipc-protocol.js";
 
 /**
-    * @typedef {Object} WorkerRegistryEntry
+    * @typedef {Object} BaseWorkerLimiterRegistryEntry
     * @property {Object} limiter
     * @property {string} config
-    * @property {(msg: number[]) => void} handleHotMessage
     * @property {(msg: Object) => void} handleColdMessage
     * 
+    * @typedef {Object} WorkerLimiterRegistryEntry
+    * @property {(msg: number[]) => void} handleHotMessage
+*/
+/**
     * @typedef {typeof globalThis & { 
-    *   [API_PROVIDERS_ID_REGISTRY_KEY]?: Map<string, WorkerRegistryEntry>, 
-    *   [API_PROVIDERS_UNIQUE_NUMBER_REGISTRY_KEY]?: Map<number, WorkerRegistryEntry>
+    *   [API_PROVIDERS_ID_REGISTRY_KEY]?: Map<string, BaseWorkerLimiterRegistryEntry>, 
+    *   [API_PROVIDERS_UNIQUE_NUMBER_REGISTRY_KEY]?: Map<number, WorkerLimiterRegistryEntry>
     * }} WorkerGlobalObject
 */
 
@@ -20,22 +23,23 @@ const API_PROVIDERS_ID_REGISTRY_KEY = Symbol.for('WorkerRateLimiter_ClustersMode
 /** @type {unique symbol} */
 const API_PROVIDERS_UNIQUE_NUMBER_REGISTRY_KEY = Symbol.for('WorkerRateLimiter_ClustersMode:apiProviderUniqueNumberRegistry_Map');
 
+const globalObject = /**@type {WorkerGlobalObject}*/(globalThis);
+
+
 /**
     * @param {string} apiProviderId
-    * @param {WorkerRegistryEntry} registryEntry
+    * @param {BaseWorkerLimiterRegistryEntry} registryEntry
 */
-export function registerWorkerLimiter(apiProviderId, registryEntry) {
-    if (!apiProviderId || typeof registryEntry !== "object") {
+export function registerBaseWorkerLimiter(apiProviderId, registryEntry) {
+    if (typeof apiProviderId !== "string" || !registryEntry || typeof registryEntry !== "object") {
         throw new RateLimiterError(
-            "ERR_MISSING_REGISTRY_ARGUMENTS", 
-            "Failed to register BaseWorkerLimiter: Both 'apiProviderId' and 'registryEntry' are strictly required."
+            "", 
+            ""
         );
     };
-    const globalObject = /**@type {WorkerGlobalObject}*/(globalThis);
     const limitersRegistry = globalObject[API_PROVIDERS_ID_REGISTRY_KEY];
     if (!limitersRegistry) {
         globalObject[API_PROVIDERS_ID_REGISTRY_KEY] = new Map([[apiProviderId, registryEntry]]);
-        globalObject[API_PROVIDERS_UNIQUE_NUMBER_REGISTRY_KEY] = new Map();
         process.on("message", (msg) => {
             // Hot Path (Executes 99.99% of the time)
             if (Array.isArray(msg)) {
@@ -67,10 +71,15 @@ export function registerWorkerLimiter(apiProviderId, registryEntry) {
 
 /**
     * @param {number} apiUniqueNumber
-    * @param {WorkerRegistryEntry} registryEntry
+    * @param {WorkerLimiterRegistryEntry} registryEntry
 */
-export function registerLimiterApiUniqueNumber(apiUniqueNumber, registryEntry) {
-    const globalObject = /**@type {WorkerGlobalObject}*/(globalThis);
+export function registerWorkerLimiter(apiUniqueNumber, registryEntry) {
+    if (typeof apiUniqueNumber !== "number" || !registryEntry || typeof registryEntry !== "object") {
+        throw new RateLimiterError(
+            "", 
+            ""
+        );
+    };
     const limiterRegistry = globalObject[API_PROVIDERS_UNIQUE_NUMBER_REGISTRY_KEY];
     if (!limiterRegistry) {
         globalObject[API_PROVIDERS_UNIQUE_NUMBER_REGISTRY_KEY] = new Map([[apiUniqueNumber, registryEntry]]);

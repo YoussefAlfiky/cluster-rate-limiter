@@ -1,7 +1,7 @@
 // @ts-check
 import { RateLimiterError } from "../errors/RateLimiterError.js";
 import { validateWorkerLimiter } from "./validators/validateWorkerLimiter.js";
-import { registerWorkerLimiter, registerLimiterApiUniqueNumber } from "./registry/registerWorkerLimiter.js";
+import { registerBaseWorkerLimiter, registerWorkerLimiter } from "./registry/registerWorkerLimiter.js";
 import { IPC_OPCODES, IPC_INDEX } from "../shared/ipc-protocol.js";
 /**
     * @typedef {{resolve: (requestId: number) => void, reject: (reason?: unknown) => void, timeout: NodeJS.Timeout}} PendingRequestTrackers
@@ -118,15 +118,7 @@ export class BaseWorkerLimiter {
             ].join('\n'));
             if (!this.#primaryAcknowledgementTrackers) {
                 if (msg.mode === this.#mode) {
-                    registerLimiterApiUniqueNumber(
-                        msg.apiUniqueNumber, 
-                        {
-                            limiter: this,
-                            config: `${this.#mode}-${this.#permitTimeoutDurationInSeconds}`,
-                            handleHotMessage: (message) => this.#handleHotMessage(message),
-                            handleColdMessage: (message) => this.#handleColdMessage(message)
-                        }
-                    );
+                    registerWorkerLimiter(msg.apiUniqueNumber, {handleHotMessage: (message) => this.#handleHotMessage(message)});
                     this.#apiUniqueNumber = msg.apiUniqueNumber;
                     this.#primaryAcknowledgementPromise = Promise.resolve();
                 } else {
@@ -138,15 +130,7 @@ export class BaseWorkerLimiter {
             const { resolve, reject, timeout } = this.#primaryAcknowledgementTrackers;
             clearTimeout(timeout);
             if (msg.mode === this.#mode) {
-                registerLimiterApiUniqueNumber(
-                    msg.apiUniqueNumber, 
-                    {
-                        limiter: this,
-                        config: `${this.#mode}-${this.#permitTimeoutDurationInSeconds}`,
-                        handleHotMessage: (message) => this.#handleHotMessage(message),
-                        handleColdMessage: (message) => this.#handleColdMessage(message)
-                    }
-                );
+                registerWorkerLimiter(msg.apiUniqueNumber, {handleHotMessage: (message) => this.#handleHotMessage(message)});
                 this.#apiUniqueNumber = msg.apiUniqueNumber;
                 resolve();
             } else {
@@ -237,10 +221,9 @@ export class BaseWorkerLimiter {
         this.#onUnclaimedPermit = onUnclaimedPermit;
         this.#permitTimeoutDurationInSeconds = permitTimeoutDurationInSeconds;
         // Register Limiter and initiate IPC listeners
-        registerWorkerLimiter(apiProviderId, {
+        registerBaseWorkerLimiter(apiProviderId, {
             limiter: this,
             config: `${mode}-${permitTimeoutDurationInSeconds}`,
-            handleHotMessage: (message) => this.#handleHotMessage(message),
             handleColdMessage: (message) => this.#handleColdMessage(message)
         });
         // start worker-primary handshake
