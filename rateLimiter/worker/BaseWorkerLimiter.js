@@ -138,10 +138,6 @@ export class BaseWorkerLimiter {
         };
         return true;
     };
-    /** @protected */
-    get _apiUniqueNumber() {
-        return this.#apiUniqueNumber;
-    };
     /** 
         * @param {boolean} isFirstCall 
         * @returns {Promise<void>} 
