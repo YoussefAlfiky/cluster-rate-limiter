@@ -49,6 +49,99 @@ export class BaseWorkerLimiter {
     #onUnclaimedPermit;
     #didCompletePrimaryHandshake = false;
     #permitTimeoutDurationInSeconds = 0 /* temp value till init */;
+    /**
+        * Initializes the foundational state, validations, and IPC routing for a worker-side rate limiter.
+        *
+        * This constructor establishes the global registry entry and begins the background handshake. 
+        * It is designed strictly to be invoked via `super()` from derived concrete subclasses.
+        *
+        * @param {string} apiProviderId
+        * The unique identifier for the target API. This must perfectly match the ID registered 
+        * by the rate limiter in the primary process.
+        * 
+        * @param {"semaphore" | "duration"} mode
+        * The operational rate-limiting strategy. Must match the strategy initialized in the primary process.
+        * 
+        * @param {number} permitTimeoutDurationInSeconds
+        * Maximum duration (in seconds) a request will wait in the queue for a primary permit before timing out.
+        * 
+        * @param {Map<number, PendingRequestTrackers>} pendingRequests
+        * Shared map utilized by subclasses to track pending requests awaiting primary acknowledgment.
+        * 
+        * @param {( (apiUniqueNumber: number, requestId: number) => void ) | null} onUnclaimedPermit
+        * Injected callback to safely release permits that arrive after their local request has timed out. 
+        * Required for 'semaphore' mode to release the lock, but explicitly `null` for 'duration' mode.
+        * 
+        * @throws {Error}
+        * If invoked directly with `new BaseWorkerLimiter()` (enforces abstract class behavior).
+        * 
+        * @throws {RateLimiterError}
+        * If instantiated within the primary process (strictly worker-only).
+        * 
+        * @throws {RateLimiterError}
+        * If a worker rate limiter for the provided `apiProviderId` has already been registered in this 
+        * process (enforces singleton pattern per API provider).
+        * 
+        * @throws {RateLimiterError}
+        * If any configuration parameter is malformed, missing, or out of bounds.
+    */
+    constructor (apiProviderId, mode, permitTimeoutDurationInSeconds, pendingRequests, onUnclaimedPermit) {
+        // Validations
+        if (new.target === BaseWorkerLimiter) {
+            throw new Error("BaseWorkerLimiter is an abstract class and cannot be instantiated directly.");
+        };
+        validateWorkerLimiter(apiProviderId, mode, permitTimeoutDurationInSeconds, pendingRequests, onUnclaimedPermit);
+        // Assign properties values 
+        this.#mode = mode;
+        this.#apiProviderId = apiProviderId;
+        this.#pendingRequests = pendingRequests;
+        this.#onUnclaimedPermit = onUnclaimedPermit;
+        this.#permitTimeoutDurationInSeconds = permitTimeoutDurationInSeconds;
+        // Register Limiter and initiate IPC listeners
+        registerBaseWorkerLimiter(apiProviderId, {
+            limiter: this,
+            config: `${mode}-${permitTimeoutDurationInSeconds}`,
+            handleColdMessage: (message) => this.#handleColdMessage(message)
+        });
+        // start worker-primary handshake
+        this.#primaryAcknowledgementPromise = this.#acknowledgePrimary(true);
+        this.#primaryAcknowledgementPromise.catch(() => {});
+    };
+    //
+    get apiProviderId() {
+        return this.#apiProviderId;
+    };
+    /**
+        * Ensures the primary process has acknowledged and validated this worker's rate limiter configuration.
+        * 
+        * The connection handshake initiates automatically in the background upon instantiation. 
+        * If the initial boot-time handshake fails (e.g., due to temporary IPC congestion or delayed 
+        * initialization on the primary), calling this method triggers exactly one retry attempt.
+        * 
+        * **Note:** The `.run()` method invokes this automatically to guarantee safe execution. 
+        * However, you can call this manually during application startup to fail-fast if the 
+        * configuration is invalid.
+        * 
+        * @returns {Promise<boolean>}
+        * Resolves to `true` once the primary process confirms successful registration.
+        * 
+        * @throws {RateLimiterError}
+        * If the primary process times out during the retry, or if a fatal configuration mismatch 
+        * occurs (e.g., initializing a worker in `'semaphore'` mode while the primary expects `'duration'`).
+    */
+    async ready() {
+        try {
+            await this.#primaryAcknowledgementPromise;
+        } catch {
+            // If the initial boot-time promise failed, try exactly once more.
+            await this.#acknowledgePrimary(false);
+        };
+        return true;
+    };
+    /** @protected */
+    get _apiUniqueNumber() {
+        return this.#apiUniqueNumber;
+    };
     /** 
         * @param {boolean} isFirstCall 
         * @returns {Promise<void>} 
@@ -137,97 +230,5 @@ export class BaseWorkerLimiter {
                 reject(modeMismatchError);
             };
         };
-    };
-    /** @protected */
-    get _apiUniqueNumber() {
-        return this.#apiUniqueNumber;
-    };
-    get apiProviderId() {
-        return this.#apiProviderId;
-    };
-    /**
-        * Ensures the primary process has acknowledged and validated this worker's rate limiter configuration.
-        * 
-        * The connection handshake initiates automatically in the background upon instantiation. 
-        * If the initial boot-time handshake fails (e.g., due to temporary IPC congestion or delayed 
-        * initialization on the primary), calling this method triggers exactly one retry attempt.
-        * 
-        * **Note:** The `.run()` method invokes this automatically to guarantee safe execution. 
-        * However, you can call this manually during application startup to fail-fast if the 
-        * configuration is invalid.
-        * 
-        * @returns {Promise<boolean>}
-        * Resolves to `true` once the primary process confirms successful registration.
-        * 
-        * @throws {RateLimiterError}
-        * If the primary process times out during the retry, or if a fatal configuration mismatch 
-        * occurs (e.g., initializing a worker in `'semaphore'` mode while the primary expects `'duration'`).
-    */
-    async ready() {
-        try {
-            await this.#primaryAcknowledgementPromise;
-        } catch {
-            // If the initial boot-time promise failed, try exactly once more.
-            await this.#acknowledgePrimary(false);
-        };
-        return true;
-    };
-    /**
-        * Initializes the foundational state, validations, and IPC routing for a worker-side rate limiter.
-        *
-        * This constructor establishes the global registry entry and begins the background handshake. 
-        * It is designed strictly to be invoked via `super()` from derived concrete subclasses.
-        *
-        * @param {string} apiProviderId
-        * The unique identifier for the target API. This must perfectly match the ID registered 
-        * by the rate limiter in the primary process.
-        * 
-        * @param {"semaphore" | "duration"} mode
-        * The operational rate-limiting strategy. Must match the strategy initialized in the primary process.
-        * 
-        * @param {number} permitTimeoutDurationInSeconds
-        * Maximum duration (in seconds) a request will wait in the queue for a primary permit before timing out.
-        * 
-        * @param {Map<number, PendingRequestTrackers>} pendingRequests
-        * Shared map utilized by subclasses to track pending requests awaiting primary acknowledgment.
-        * 
-        * @param {( (apiUniqueNumber: number, requestId: number) => void ) | null} onUnclaimedPermit
-        * Injected callback to safely release permits that arrive after their local request has timed out. 
-        * Required for 'semaphore' mode to release the lock, but explicitly `null` for 'duration' mode.
-        * 
-        * @throws {Error}
-        * If invoked directly with `new BaseWorkerLimiter()` (enforces abstract class behavior).
-        * 
-        * @throws {RateLimiterError}
-        * If instantiated within the primary process (strictly worker-only).
-        * 
-        * @throws {RateLimiterError}
-        * If a worker rate limiter for the provided `apiProviderId` has already been registered in this 
-        * process (enforces singleton pattern per API provider).
-        * 
-        * @throws {RateLimiterError}
-        * If any configuration parameter is malformed, missing, or out of bounds.
-    */
-    constructor (apiProviderId, mode, permitTimeoutDurationInSeconds, pendingRequests, onUnclaimedPermit) {
-        // Validations
-        if (new.target === BaseWorkerLimiter) {
-            throw new Error("BaseWorkerLimiter is an abstract class and cannot be instantiated directly.");
-        };
-        validateWorkerLimiter(apiProviderId, mode, permitTimeoutDurationInSeconds, pendingRequests, onUnclaimedPermit);
-        // Assign properties values 
-        this.#mode = mode;
-        this.#apiProviderId = apiProviderId;
-        this.#pendingRequests = pendingRequests;
-        this.#onUnclaimedPermit = onUnclaimedPermit;
-        this.#permitTimeoutDurationInSeconds = permitTimeoutDurationInSeconds;
-        // Register Limiter and initiate IPC listeners
-        registerBaseWorkerLimiter(apiProviderId, {
-            limiter: this,
-            config: `${mode}-${permitTimeoutDurationInSeconds}`,
-            handleColdMessage: (message) => this.#handleColdMessage(message)
-        });
-        // start worker-primary handshake
-        this.#primaryAcknowledgementPromise = this.#acknowledgePrimary(true);
-        this.#primaryAcknowledgementPromise.catch(() => {});
     };
 };
