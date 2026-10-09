@@ -2,11 +2,22 @@
 import { RateLimiterError } from "../errors/RateLimiterError.js";
 import { validateWorkerLimiter } from "./validators/validateWorkerLimiter.js";
 import { registerBaseWorkerLimiter, registerWorkerLimiter } from "./registry/workerLimiterRegistry.js";
-import { IPC_OPCODES, IPC_INDEX } from "../shared/ipc-protocol.js";
+import { IPC_SIGNATURE, IPC_OPCODES, IPC_INDEX } from "../shared/ipc-protocol.js";
+import { emitSafeError, triggerEvent } from "../events/triggerEvent.js";
 /**
     * @typedef {{resolve: (requestId: number) => void, reject: (reason?: unknown) => void, timeout: NodeJS.Timeout}} PendingRequestTrackers
     * @typedef {{resolve: () => void, reject: (reason?: unknown) => void, timeout: NodeJS.Timeout}} PrimaryAcknowledgementTrackers
 */
+/**
+    * @typedef {(apiProviderId: string, requestId: number, err: unknown) => void | Promise<void>} ReleaseFailureCallback
+    * @typedef {(err: unknown) => void | Promise<void>} ErrorCallback
+    * 
+    * @typedef {Object} ReleasePermitListenerBuckets
+    * @property {{ on: Set<ReleaseFailureCallback>, once: Set<ReleaseFailureCallback> }} releasePermitFailure
+    * @property {{ on: Set<ErrorCallback>, once: Set<ErrorCallback> }} error
+*/
+export const _kAcquirePermit = Symbol("kAcquirePermit");
+export const _kReleasePermit = Symbol("kReleasePermit");
 
 /**
     * Abstract base class for cluster worker-side rate limiters.
@@ -35,7 +46,7 @@ export class BaseWorkerLimiter {
         * @readonly
         * @type {Map<number, PendingRequestTrackers>} 
     */
-    #pendingRequests;
+    #pendingRequests = new Map();
     /** 
         * @readonly
         * @type {"semaphore" | "duration"} 
@@ -45,10 +56,23 @@ export class BaseWorkerLimiter {
     #primaryAcknowledgementPromise;
     /** @type {PrimaryAcknowledgementTrackers | null} */
     #primaryAcknowledgementTrackers = null;
-    /** @type {( (apiUniqueNumber: number, requestId: number) => void ) | null}*/
-    #onUnclaimedPermit;
     #didCompletePrimaryHandshake = false;
-    #permitTimeoutDurationInSeconds = 0 /* temp value till init */;
+    #didAcknowledgePrimaryMatch = false;
+    /** 
+        * @readonly
+        * @type {number} 
+    */
+    #permitTimeoutDurationMs = 0 /* temp value till init */;
+    /**
+        * @readonly
+        * @type {ReleasePermitListenerBuckets | null} 
+    */
+    #releasePermitListenerBuckets;
+    /**@readonly */
+    #MIN_SMI = -(1 << 30);
+    /**@readonly */
+    #MAX_SMI =  (1 << 30) - 1;
+    #requestId = this.#MIN_SMI;
     /**
         * Initializes the foundational state, validations, and IPC routing for a worker-side rate limiter.
         *
@@ -65,12 +89,9 @@ export class BaseWorkerLimiter {
         * @param {number} permitTimeoutDurationInSeconds
         * Maximum duration (in seconds) a request will wait in the queue for a primary permit before timing out.
         * 
-        * @param {Map<number, PendingRequestTrackers>} pendingRequests
-        * Shared map utilized by subclasses to track pending requests awaiting primary acknowledgment.
-        * 
-        * @param {( (apiUniqueNumber: number, requestId: number) => void ) | null} onUnclaimedPermit
-        * Injected callback to safely release permits that arrive after their local request has timed out. 
-        * Required for 'semaphore' mode to release the lock, but explicitly `null` for 'duration' mode.
+        * * @param {ReleasePermitListenerBuckets | null} releasePermitListenerBuckets
+        * Injected event buckets used exclusively by 'semaphore' limiters to report 
+        * network anomalies during background permit releases. Must be `null` for 'duration' limiters.
         * 
         * @throws {Error}
         * If invoked directly with `new BaseWorkerLimiter()` (enforces abstract class behavior).
@@ -85,18 +106,17 @@ export class BaseWorkerLimiter {
         * @throws {RateLimiterError}
         * If any configuration parameter is malformed, missing, or out of bounds.
     */
-    constructor (apiProviderId, mode, permitTimeoutDurationInSeconds, pendingRequests, onUnclaimedPermit) {
+    constructor (apiProviderId, mode, permitTimeoutDurationInSeconds, releasePermitListenerBuckets) {
         // Validations
         if (new.target === BaseWorkerLimiter) {
             throw new Error("BaseWorkerLimiter is an abstract class and cannot be instantiated directly.");
         };
-        validateWorkerLimiter(apiProviderId, mode, permitTimeoutDurationInSeconds, pendingRequests, onUnclaimedPermit);
+        validateWorkerLimiter(apiProviderId, mode, permitTimeoutDurationInSeconds, releasePermitListenerBuckets);
         // Assign properties values 
         this.#mode = mode;
         this.#apiProviderId = apiProviderId;
-        this.#pendingRequests = pendingRequests;
-        this.#onUnclaimedPermit = onUnclaimedPermit;
-        this.#permitTimeoutDurationInSeconds = permitTimeoutDurationInSeconds;
+        this.#permitTimeoutDurationMs = permitTimeoutDurationInSeconds * 1000;
+        this.#releasePermitListenerBuckets = releasePermitListenerBuckets;
         // Register Limiter and initiate IPC listeners
         registerBaseWorkerLimiter(apiProviderId, {
             limiter: this,
@@ -137,6 +157,116 @@ export class BaseWorkerLimiter {
             await this.#acknowledgePrimary(false);
         };
         return true;
+    };
+    /**
+        * Acquires a capacity permit from the primary process via IPC.
+        * 
+        * This method manages the complete acquisition lifecycle: it guarantees the initial 
+        * IPC handshake is settled, generates a high-performance V8 SMI request ID, registers 
+        * the timeout traps, and dispatches the hot-path `ACQUIRE` message.
+        * 
+        * **Subclass Usage:** 
+        * The resolved `requestId` is crucial. While "duration" limiters can safely ignore it, 
+        * "semaphore" limiters **must** capture this ID and pass it to `[_kReleasePermit]` 
+        * once the user's workload settles.
+        * 
+        * @protected
+        * @async
+        * @returns {Promise<number>} Resolves with the unique local `requestId` assigned to this permit.
+        * 
+        * @throws {RateLimiterError} 
+        * - `ERR_IPC_CHANNEL_CLOSED`: If the worker is orphaned or the IPC channel drops before sending.
+        * - `ERR_PERMIT_TIMEOUT`: If the primary process does not grant capacity within the configured window.
+        * - `ERR_MODE_MISMATCH`: If the lazy handshake fails due to a configuration mismatch.
+    */
+    async [_kAcquirePermit]() {
+        if (!this.#didAcknowledgePrimaryMatch) {
+            await this.ready();
+            this.#didAcknowledgePrimaryMatch = true;
+        };
+        //
+        if (this.#requestId === this.#MAX_SMI) { 
+            this.#requestId = this.#MIN_SMI;
+        } else {
+            this.#requestId++;
+        };
+        const reqId = this.#requestId;
+        //
+        return new Promise((resolve, reject) => {
+            if (!process.send) {
+                return reject(new RateLimiterError(
+                    "ERR_IPC_CHANNEL_CLOSED", 
+                    "Cannot acquire permit: The IPC channel is closed. The worker may be disconnected or orphaned."
+                ));
+            };
+            const timeout = setTimeout(() => {
+                const pendingRequestTrackers = this.#pendingRequests.get(reqId);
+                if (pendingRequestTrackers) {
+                    const { reject } = pendingRequestTrackers;
+                    this.#pendingRequests.delete(reqId);
+                    reject(new RateLimiterError("ERR_PERMIT_TIMEOUT", `Timed out waiting for a permit for ${reqId} request.`));
+                };
+            }, this.#permitTimeoutDurationMs);
+            this.#pendingRequests.set(reqId, {resolve, reject, timeout});
+            process.send([IPC_SIGNATURE, this.#apiUniqueNumber, IPC_OPCODES.ACQUIRE, reqId], (err) => {
+                if (err) {
+                    this.#pendingRequests.delete(reqId);
+                    clearTimeout(timeout);
+                    reject(err);
+                };
+            });
+        });
+    };
+    /**
+        * Asynchronously dispatches a permit release signal to the primary process.
+        * 
+        * This is a "fire-and-forget" background operation designed to execute without blocking 
+        * the subclass's resolution cycle. It includes a built-in micro-retry mechanism to handle 
+        * transient IPC congestion. 
+        * 
+        * If the release ultimately fails (e.g., due to a closed IPC channel or max retries exceeded), 
+        * it silently swallows the V8 exception and pipes the failure to the registered 
+        * `releasePermitListenerBuckets` for developer visibility.
+        * 
+        * **Subclass Usage:**
+        * Should only be invoked by "semaphore" mode subclasses inside a `finally` block to 
+        * guarantee the concurrency slot is released regardless of the workload's outcome.
+        * 
+        * @protected
+        * @param {number} requestId The unique local ID of the permit to release.
+        * @returns {void}
+    */
+    [_kReleasePermit](requestId) {
+        /**@param {Error} err */
+        const reportError = (err) => {
+            if (!this.#releasePermitListenerBuckets) return;
+            const { releasePermitFailure, error: errorListeners } = this.#releasePermitListenerBuckets;
+            if (!triggerEvent(releasePermitFailure, errorListeners, this.#apiProviderId, requestId, err)) {
+                emitSafeError(errorListeners, err);
+            };
+        };
+        const message = [IPC_SIGNATURE, this.#apiUniqueNumber, IPC_OPCODES.RELEASE, requestId];
+        const sendPermitTermination = /** @param {number} retryCount */(retryCount) => {
+            if (!process.send) {
+                reportError(new RateLimiterError(
+                    "ERR_IPC_CHANNEL_CLOSED", 
+                    "Cannot release permit: The IPC channel is closed. The worker may be disconnected or orphaned."
+                ));
+                return;
+            };
+            process.send(message, (err) => {
+                if (err) {
+                    if (retryCount > 3) {
+                        reportError(err);
+                    } else {
+                        setTimeout(() => {
+                            sendPermitTermination(retryCount + 1);
+                        }, 50);
+                    };
+                }
+            });
+        };
+        sendPermitTermination(0);
     };
     /** 
         * @param {boolean} isFirstCall 
@@ -181,10 +311,9 @@ export class BaseWorkerLimiter {
             const requestId = msg[IPC_INDEX.PAYLOAD];
             const trackers = this.#pendingRequests.get(requestId);
             if (!trackers) {
-                // this.#onUnclaimedPermit is always null in duration mode
-                if (this.#onUnclaimedPermit) {
-                    this.#onUnclaimedPermit(this.#apiUniqueNumber, requestId);
-                };
+                if (this.#mode === "semaphore") {
+                    this[_kReleasePermit](requestId);
+                }
                 return;
             };
             this.#pendingRequests.delete(requestId);

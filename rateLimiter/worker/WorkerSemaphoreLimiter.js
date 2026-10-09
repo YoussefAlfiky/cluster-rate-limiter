@@ -1,11 +1,6 @@
 //@ts-check
-import { BaseWorkerLimiter } from "./BaseWorkerLimiter.js";
-import { acquirePermit } from "./ipc/acquirePermit.js"
-import { releaseSemaphorePermit as releasePermit } from "./ipc/releaseSemaphorePermit.js";
-import { EventListenerRegistry } from "../events/EventListenerRegistry.js"
-/**
-    * @typedef {{resolve: (requestId: number) => void, reject: (reason?: unknown) => void, timeout: NodeJS.Timeout}} PendingRequestTrackers
-*/
+import { BaseWorkerLimiter, _kAcquirePermit, _kReleasePermit } from "./BaseWorkerLimiter.js";
+import { EventListenerRegistry } from "../events/EventListenerRegistry.js";
 /**
     * @typedef {(apiProviderId: string, requestId: number, err: unknown) => void | Promise<void>} ReleaseFailureCallback
     * @typedef {(err: unknown) => void | Promise<void>} ErrorCallback
@@ -32,37 +27,11 @@ import { EventListenerRegistry } from "../events/EventListenerRegistry.js"
     * to handle potential IPC network anomalies during teardown.
 */
 export class WorkerSemaphoreLimiter extends BaseWorkerLimiter {
-    #didAcknowledgePrimaryMatch = false;
     /**
         * @readonly
-        * @type {string} 
-    */
-    #apiProviderId;
-    /** 
-        * @readonly
-        * @type {number} 
-    */
-    #permitTimeoutDurationMs = 0;
-    /**
-        * @readonly 
-        * @type {Map<number, PendingRequestTrackers>}
-    */
-    #pendingRequests;
-    /**
-        * @readonly
-        * @type {ListenerBuckets}  
-    */
-    #listenerBuckets;
-    /**
-    * @readonly
-    * @type {EventListenerRegistry<ListenerBuckets>}
+        * @type {EventListenerRegistry<ListenerBuckets>}
     */
     #eventEmitter;
-    /**@readonly */
-    #MIN_SMI = -(1 << 30);
-    /**@readonly */
-    #MAX_SMI =  (1 << 30) - 1;
-    #requestId = this.#MIN_SMI;
     /**
         * Initializes the worker-side semaphore rate limiter and establishes IPC routing.
         *
@@ -78,31 +47,12 @@ export class WorkerSemaphoreLimiter extends BaseWorkerLimiter {
         * @throws {RateLimiterError} If any configuration parameter is invalid or out of bounds.
     */
     constructor(apiProviderId, permitTimeoutDurationInSeconds) {
-        /**@type {Map<number, PendingRequestTrackers>}*/
-        const pendingRequests = new Map();
         /**@type {ListenerBuckets}*/
         const listenerBuckets = {
             releasePermitFailure: { on: new Set(), once: new Set() },
             error: { on: new Set(), once: new Set() }
         };
-        /**
-            * @param {number} apiUniqueNumber
-            * @param {number} requestId 
-        */
-        const onUnclaimedPermit = (apiUniqueNumber, requestId) => {
-            releasePermit(
-                apiProviderId, 
-                apiUniqueNumber,
-                requestId, 
-                listenerBuckets.releasePermitFailure, 
-                listenerBuckets.error
-            ).catch(() => {});
-        };
-        super(apiProviderId, "semaphore", permitTimeoutDurationInSeconds, pendingRequests, onUnclaimedPermit);
-        this.#apiProviderId = apiProviderId;
-        this.#permitTimeoutDurationMs = permitTimeoutDurationInSeconds * 1000;
-        this.#pendingRequests = pendingRequests;
-        this.#listenerBuckets = listenerBuckets;
+        super(apiProviderId, "semaphore", permitTimeoutDurationInSeconds, listenerBuckets);
         this.#eventEmitter = new EventListenerRegistry(listenerBuckets);
     };
     /**
@@ -139,26 +89,11 @@ export class WorkerSemaphoreLimiter extends BaseWorkerLimiter {
         * ```
     */
     async run(caller, ...args) {
-        if (!this.#didAcknowledgePrimaryMatch) {
-            await this.ready();
-            this.#didAcknowledgePrimaryMatch = true;
-        };
-        const requestId = await acquirePermit(
-            this._apiUniqueNumber, 
-            this.#requestId === this.#MAX_SMI ? this.#requestId = this.#MIN_SMI : ++this.#requestId,
-            this.#pendingRequests, 
-            this.#permitTimeoutDurationMs
-        );
+        const requestId = await this[_kAcquirePermit]();
         try {
             return await caller(...args);
         } finally {
-            releasePermit(
-                this.#apiProviderId, 
-                this._apiUniqueNumber,
-                requestId, 
-                this.#listenerBuckets.releasePermitFailure, 
-                this.#listenerBuckets.error
-            ).catch(() => {});
+            this[_kReleasePermit](requestId);
         };
     };
     /**

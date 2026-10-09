@@ -1,9 +1,5 @@
 //@ts-check
-import {BaseWorkerLimiter} from "./BaseWorkerLimiter.js"
-import { acquirePermit } from "./ipc/acquirePermit.js"
-/**
-    * @typedef {{resolve: (requestId: number) => void, reject: (reason?: unknown) => void, timeout: NodeJS.Timeout}} PendingRequestTrackers
-*/
+import { BaseWorkerLimiter, _kAcquirePermit } from "./BaseWorkerLimiter.js"
 
 /**
     * Worker-side client for duration-based rate limiting in a Node.js cluster.
@@ -18,22 +14,6 @@ import { acquirePermit } from "./ipc/acquirePermit.js"
     * process automatically replenishes capacity over time.
 */
 export class WorkerDurationLimiter extends BaseWorkerLimiter {
-    #didAcknowledgePrimaryMatch = false;
-    /** 
-        * @readonly
-        * @type {number} 
-    */
-    #permitTimeoutDurationMs = 0;
-    /**
-        * @readonly 
-        * @type {Map<number, PendingRequestTrackers>}
-    */
-    #pendingRequests;
-    /**@readonly */
-    #MIN_SMI = -(1 << 30);
-    /**@readonly */
-    #MAX_SMI =  (1 << 30) - 1;
-    #requestId = this.#MIN_SMI;
     /**
         * Initializes the worker-side duration rate limiter and establishes IPC routing.
         *
@@ -49,11 +29,7 @@ export class WorkerDurationLimiter extends BaseWorkerLimiter {
         * @throws {RateLimiterError} If any configuration parameter is invalid or out of bounds.
     */
     constructor(apiProviderId, permitTimeoutDurationInSeconds) {
-        /**@type {Map<number, PendingRequestTrackers>}*/
-        const pendingRequests = new Map();
-        super(apiProviderId, "duration", permitTimeoutDurationInSeconds, pendingRequests, null);
-        this.#permitTimeoutDurationMs = permitTimeoutDurationInSeconds * 1000;
-        this.#pendingRequests = pendingRequests;
+        super(apiProviderId, "duration", permitTimeoutDurationInSeconds, null);
     };
     /**
         * Executes the provided function after acquiring a capacity permit from the primary process.
@@ -88,16 +64,7 @@ export class WorkerDurationLimiter extends BaseWorkerLimiter {
         * ```
     */
     async run(caller, ...args) {
-        if (!this.#didAcknowledgePrimaryMatch) {
-            await this.ready();
-            this.#didAcknowledgePrimaryMatch = true;
-        };
-        await acquirePermit(
-            this._apiUniqueNumber, 
-            this.#requestId === this.#MAX_SMI ? this.#requestId = this.#MIN_SMI : ++this.#requestId,
-            this.#pendingRequests, 
-            this.#permitTimeoutDurationMs
-        );
+        await this[_kAcquirePermit]();
         return caller(...args);
     };
 };
