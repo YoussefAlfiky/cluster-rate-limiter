@@ -39,10 +39,16 @@ const globalObject = /**@type {WorkerGlobalObject}*/(globalThis);
     * @throws {RateLimiterError} If a limiter for this ID is already active, preventing rogue duplicates.
 */
 export function registerLimiterByProviderId(apiProviderId, registryEntry) {
-    if (typeof apiProviderId !== "string" || !registryEntry || typeof registryEntry !== "object") {
+    if (
+        typeof apiProviderId !== "string" 
+        || !registryEntry || typeof registryEntry !== "object" 
+        || !registryEntry.limiter || typeof registryEntry.limiter !== 'object' 
+        || typeof registryEntry.config !== "string" 
+        || typeof registryEntry.handleColdMessage !== "function"
+    ) {
         throw new RateLimiterError(
             "ERR_INVALID_REGISTRY_ENTRY", 
-            "Failed to register limiter cold path: 'apiProviderId' must be a string and 'registryEntry' must be a valid object."
+            "Failed to register limiter cold path: 'registryEntry' is malformed. It must strictly implement the ProviderIdRegistryEntry interface containing 'limiter' (object), 'config' (string), and 'handleColdMessage' (function)."
         );
     };
     const limitersRegistry = globalObject[API_PROVIDERS_ID_REGISTRY_KEY];
@@ -87,10 +93,26 @@ export function registerLimiterByProviderId(apiProviderId, registryEntry) {
     * By mapping the integer directly to the handler, it allows the IPC router to bypass 
     * string comparisons and object parsing for all high-frequency capacity traffic.
     * 
+    * **Developer Caution:**
+    * Because this function is called inside the `process.on('message')` listener during a handshake, 
+    * passing malformed arguments will throw a synchronous error and **crash the entire Node.js worker process**.
+    * 
     * @param {number} apiUniqueNumber The V8-optimized integer ID provided by the primary process.
     * @param {UniqueNumberRegistryEntry} registryEntry The hot-path callback for capacity grants.
+    * @throws {RateLimiterError} If arguments do not strictly match the `UniqueNumberRegistryEntry` interface.
 */
 export function registerLimiterByUniqueNumber(apiUniqueNumber, registryEntry) {
+    // Developer Caution: if you pass wrong parameters, this error will crash the entire process
+    if (
+        typeof apiUniqueNumber !== "number"
+        || !registryEntry || typeof registryEntry !== "object" 
+        || typeof registryEntry.handleHotMessage !== "function"
+    ) {
+        throw new RateLimiterError(
+            "ERR_INVALID_REGISTRY_ENTRY", 
+            "Failed to register limiter hot path: 'registryEntry' is malformed. It must strictly implement the UniqueNumberRegistryEntry interface containing 'handleHotMessage' (function)."
+        );
+    };
     const limiterRegistry = globalObject[API_PROVIDERS_UNIQUE_NUMBER_REGISTRY_KEY];
     if (!limiterRegistry) {
         globalObject[API_PROVIDERS_UNIQUE_NUMBER_REGISTRY_KEY] = new Map([[apiUniqueNumber, registryEntry]]);
