@@ -3,18 +3,18 @@ import { RateLimiterError } from "../../errors/RateLimiterError.js"
 import { IPC_SIGNATURE, IPC_MESSAGE_LENGTH, IPC_INDEX } from "../../shared/ipc-protocol.js";
 
 /**
-    * @typedef {Object} BaseWorkerLimiterRegistryEntry
+    * @typedef {Object} ProviderIdRegistryEntry
     * @property {Object} limiter
     * @property {string} config
     * @property {(msg: Object) => void} handleColdMessage
     * 
-    * @typedef {Object} WorkerLimiterRegistryEntry
+    * @typedef {Object} UniqueNumberRegistryEntry
     * @property {(msg: number[]) => void} handleHotMessage
 */
 /**
     * @typedef {typeof globalThis & { 
-    *   [API_PROVIDERS_ID_REGISTRY_KEY]?: Map<string, BaseWorkerLimiterRegistryEntry>, 
-    *   [API_PROVIDERS_UNIQUE_NUMBER_REGISTRY_KEY]?: Map<number, WorkerLimiterRegistryEntry>
+    *   [API_PROVIDERS_ID_REGISTRY_KEY]?: Map<string, ProviderIdRegistryEntry>, 
+    *   [API_PROVIDERS_UNIQUE_NUMBER_REGISTRY_KEY]?: Map<number, UniqueNumberRegistryEntry>
     * }} WorkerGlobalObject
 */
 
@@ -35,7 +35,7 @@ const globalObject = /**@type {WorkerGlobalObject}*/(globalThis);
     * completely preventing `MaxListenersExceededWarning` memory leaks.
     * 
     * @param {string} apiProviderId The unique string identifier defined by the user (e.g., "stripe-api").
-    * @param {BaseWorkerLimiterRegistryEntry} registryEntry The limiter instance and its handshake callback.
+    * @param {ProviderIdRegistryEntry} registryEntry The limiter instance and its handshake callback.
     * @throws {RateLimiterError} If a limiter for this ID is already active, preventing rogue duplicates.
 */
 export function registerLimiterByProviderId(apiProviderId, registryEntry) {
@@ -88,7 +88,7 @@ export function registerLimiterByProviderId(apiProviderId, registryEntry) {
     * string comparisons and object parsing for all high-frequency capacity traffic.
     * 
     * @param {number} apiUniqueNumber The V8-optimized integer ID provided by the primary process.
-    * @param {WorkerLimiterRegistryEntry} registryEntry The hot-path callback for capacity grants.
+    * @param {UniqueNumberRegistryEntry} registryEntry The hot-path callback for capacity grants.
 */
 export function registerLimiterByUniqueNumber(apiUniqueNumber, registryEntry) {
     const limiterRegistry = globalObject[API_PROVIDERS_UNIQUE_NUMBER_REGISTRY_KEY];
