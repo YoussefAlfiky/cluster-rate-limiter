@@ -1,7 +1,7 @@
 // @ts-check
 import { RateLimiterError } from "../errors/RateLimiterError.js";
 import { validateWorkerLimiter } from "./validators/validateWorkerLimiter.js";
-import { registerBaseWorkerLimiter, registerWorkerLimiter } from "./registry/workerLimiterRegistry.js";
+import { registerLimiterByProviderId, registerLimiterByUniqueNumber } from "./registry/workerLimiterRegistry.js";
 import { IPC_SIGNATURE, IPC_OPCODES, IPC_INDEX } from "../shared/ipc-protocol.js";
 import { emitSafeError, triggerEvent } from "../events/triggerEvent.js";
 /**
@@ -89,7 +89,7 @@ export class BaseWorkerLimiter {
         * @param {number} permitTimeoutDurationInSeconds
         * Maximum duration (in seconds) a request will wait in the queue for a primary permit before timing out.
         * 
-        * * @param {ReleasePermitListenerBuckets | null} releasePermitListenerBuckets
+        * @param {ReleasePermitListenerBuckets | null} releasePermitListenerBuckets
         * Injected event buckets used exclusively by 'semaphore' limiters to report 
         * network anomalies during background permit releases. Must be `null` for 'duration' limiters.
         * 
@@ -118,7 +118,7 @@ export class BaseWorkerLimiter {
         this.#permitTimeoutDurationMs = permitTimeoutDurationInSeconds * 1000;
         this.#releasePermitListenerBuckets = releasePermitListenerBuckets;
         // Register Limiter and initiate IPC listeners
-        registerBaseWorkerLimiter(apiProviderId, {
+        registerLimiterByProviderId(apiProviderId, {
             limiter: this,
             config: `${mode}-${permitTimeoutDurationInSeconds}`,
             handleColdMessage: (message) => this.#handleColdMessage(message)
@@ -336,7 +336,7 @@ export class BaseWorkerLimiter {
             ].join('\n'));
             if (!this.#primaryAcknowledgementTrackers) {
                 if (msg.mode === this.#mode) {
-                    registerWorkerLimiter(msg.apiUniqueNumber, {handleHotMessage: (message) => this.#handleHotMessage(message)});
+                    registerLimiterByUniqueNumber(msg.apiUniqueNumber, {handleHotMessage: (message) => this.#handleHotMessage(message)});
                     this.#apiUniqueNumber = msg.apiUniqueNumber;
                     this.#primaryAcknowledgementPromise = Promise.resolve();
                 } else {
@@ -348,7 +348,7 @@ export class BaseWorkerLimiter {
             const { resolve, reject, timeout } = this.#primaryAcknowledgementTrackers;
             clearTimeout(timeout);
             if (msg.mode === this.#mode) {
-                registerWorkerLimiter(msg.apiUniqueNumber, {handleHotMessage: (message) => this.#handleHotMessage(message)});
+                registerLimiterByUniqueNumber(msg.apiUniqueNumber, {handleHotMessage: (message) => this.#handleHotMessage(message)});
                 this.#apiUniqueNumber = msg.apiUniqueNumber;
                 resolve();
             } else {

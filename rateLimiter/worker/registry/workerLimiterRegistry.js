@@ -27,14 +27,22 @@ const globalObject = /**@type {WorkerGlobalObject}*/(globalThis);
 
 
 /**
-    * @param {string} apiProviderId
-    * @param {BaseWorkerLimiterRegistryEntry} registryEntry
+    * Registers a rate limiter into the cold-path routing map to receive its boot-time handshake.
+    * 
+    * **Architecture Note:**
+    * This function acts as the global process bootstrapper. The very first time it is invoked, 
+    * it safely attaches the singleton `process.on('message')` IPC router for the entire worker, 
+    * completely preventing `MaxListenersExceededWarning` memory leaks.
+    * 
+    * @param {string} apiProviderId The unique string identifier defined by the user (e.g., "stripe-api").
+    * @param {BaseWorkerLimiterRegistryEntry} registryEntry The limiter instance and its handshake callback.
+    * @throws {RateLimiterError} If a limiter for this ID is already active, preventing rogue duplicates.
 */
-export function registerBaseWorkerLimiter(apiProviderId, registryEntry) {
+export function registerLimiterByProviderId(apiProviderId, registryEntry) {
     if (typeof apiProviderId !== "string" || !registryEntry || typeof registryEntry !== "object") {
         throw new RateLimiterError(
-            "", 
-            ""
+            "ERR_INVALID_REGISTRY_ENTRY", 
+            "Failed to register limiter cold path: 'apiProviderId' must be a string and 'registryEntry' must be a valid object."
         );
     };
     const limitersRegistry = globalObject[API_PROVIDERS_ID_REGISTRY_KEY];
@@ -70,16 +78,19 @@ export function registerBaseWorkerLimiter(apiProviderId, registryEntry) {
 };
 
 /**
-    * @param {number} apiUniqueNumber
-    * @param {WorkerLimiterRegistryEntry} registryEntry
+    * Upgrades a rate limiter into the O(1) hot-path routing map.
+    * 
+    * **When to call:**
+    * This must only be invoked *after* the primary process has acknowledged the limiter 
+    * and assigned it a high-performance integer ID (`apiUniqueNumber`).
+    * 
+    * By mapping the integer directly to the handler, it allows the IPC router to bypass 
+    * string comparisons and object parsing for all high-frequency capacity traffic.
+    * 
+    * @param {number} apiUniqueNumber The V8-optimized integer ID provided by the primary process.
+    * @param {WorkerLimiterRegistryEntry} registryEntry The hot-path callback for capacity grants.
 */
-export function registerWorkerLimiter(apiUniqueNumber, registryEntry) {
-    if (typeof apiUniqueNumber !== "number" || !registryEntry || typeof registryEntry !== "object") {
-        throw new RateLimiterError(
-            "", 
-            ""
-        );
-    };
+export function registerLimiterByUniqueNumber(apiUniqueNumber, registryEntry) {
     const limiterRegistry = globalObject[API_PROVIDERS_UNIQUE_NUMBER_REGISTRY_KEY];
     if (!limiterRegistry) {
         globalObject[API_PROVIDERS_UNIQUE_NUMBER_REGISTRY_KEY] = new Map([[apiUniqueNumber, registryEntry]]);
