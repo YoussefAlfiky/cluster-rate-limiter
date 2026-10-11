@@ -254,17 +254,30 @@ export class BaseWorkerLimiter {
                 ));
                 return;
             };
-            process.send(message, (err) => {
-                if (err) {
-                    if (retryCount > 3) {
-                        reportError(err);
-                    } else {
-                        setTimeout(() => {
-                            sendPermitTermination(retryCount + 1);
-                        }, 50);
-                    };
+            try {
+                process.send(message, (err) => {
+                    if (err) {
+                        if (retryCount > 3) {
+                            reportError(err);
+                        } else {
+                            setTimeout(() => {
+                                sendPermitTermination(retryCount + 1);
+                            }, 50);
+                        };
+                    }
+                });
+            } catch (err) {
+                try {
+                    const normalizedError = err instanceof Error ? err : new Error(String(err));
+                    reportError(normalizedError);
+                } catch {
+                    process.emitWarning(
+                        "Unknown error",
+                        "RateLimiterWarning",
+                        "An 'error' listener threw a synchronous exception."
+                    );
                 }
-            });
+            };
         };
         sendPermitTermination(0);
     };
