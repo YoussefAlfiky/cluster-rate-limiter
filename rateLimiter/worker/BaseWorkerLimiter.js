@@ -127,9 +127,13 @@ export class BaseWorkerLimiter {
         this.#primaryAcknowledgementPromise = this.#acknowledgePrimary(true);
         this.#primaryAcknowledgementPromise.catch(() => {});
     };
-    //
+    /** @returns {string} */
     get apiProviderId() {
         return this.#apiProviderId;
+    };
+    /** @returns {"semaphore" | "duration"} */
+    get mode() {
+        return this.#mode;
     };
     /**
         * Ensures the primary process has acknowledged and validated this worker's rate limiter configuration.
