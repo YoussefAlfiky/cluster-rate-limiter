@@ -44,7 +44,7 @@ const globalObject = /**@type {PrimaryGlobalObject}*/(globalThis);
 */
 export function registerLimiterByProviderId(apiProviderId, registryEntry) {
     if (
-        typeof apiProviderId !== "string" 
+        typeof apiProviderId !== "string" || apiProviderId.trim() === ""
         || !registryEntry || typeof registryEntry !== "object" 
         || !registryEntry.limiter || typeof registryEntry.limiter !== "object" 
         || typeof registryEntry.config !== "string" 
@@ -52,7 +52,7 @@ export function registerLimiterByProviderId(apiProviderId, registryEntry) {
     ) {
         throw new RateLimiterError(
             "ERR_INVALID_REGISTRY_ENTRY", 
-            "Failed to register primary limiter cold path: 'registryEntry' is malformed. It must strictly implement the ProviderIdRegistryEntry interface containing 'limiter' (object), 'config' (string), and 'handleColdMessage' (function)."
+            "Failed to register primary limiter cold path: 'apiProviderId' must be a non-empty string, and 'registryEntry' must strictly implement the ProviderIdRegistryEntry interface containing 'limiter' (object), 'config' (string), and 'handleColdMessage' (function)."
         );
     };
     const limiterRegistry = globalObject[API_PROVIDERS_ID_REGISTRY_KEY];
@@ -95,27 +95,29 @@ export function registerLimiterByProviderId(apiProviderId, registryEntry) {
 };
 
 /**
-    * Generates a unique integer ID and upgrades a primary rate limiter into the O(1) hot-path routing map.
+    * Upgrades a primary rate limiter into the O(1) hot-path routing map.
     * 
     * **Architecture Note:**
-    * This function safely issues a centralized, auto-incrementing integer (`apiUniqueNumber`). 
-    * After registering the high-performance mapping, it executes a proactive broadcast to all 
-    * currently active cluster workers. This ensures that even if workers boot *before* this 
-    * primary limiter, they immediately receive their fast-path authorization.
+    * After registering the high-performance mapping using the pre-generated `apiUniqueNumber`, 
+    * it executes a proactive broadcast to all currently active cluster workers. This ensures 
+    * that even if workers boot *before* this primary limiter, they immediately receive their 
+    * fast-path authorization.
     * 
     * **Developer Caution:**
     * Because this is internal routing infrastructure, passing malformed arguments intentionally 
     * throws a synchronous error to fail-fast and prevent silent IPC corruption during development.
     * 
+    * @param {number} apiUniqueNumber The V8-optimized integer ID generated for this limiter.
     * @param {string} apiProviderId The unique string identifier of the target API.
     * @param {"semaphore" | "duration"} mode The operational rate-limiting strategy.
     * @param {UniqueNumberRegistryEntry} registryEntry The hot-path capacity handler and worker exit cleanup callback.
-    * @throws {RateLimiterError} If arguments are malformed, or if registry state corruption is detected.
-    * @returns {number} The newly generated, V8-optimized integer ID (`apiUniqueNumber`) for this limiter.
+    * @throws {RateLimiterError} If arguments are malformed, or if an `apiUniqueNumber` collision occurs.
+    * @returns {void}
 */
-export function registerLimiterByUniqueNumber(apiProviderId, mode, registryEntry) {
+export function registerLimiterByUniqueNumber(apiUniqueNumber, apiProviderId, mode, registryEntry) {
     if (
-        typeof apiProviderId !== "string" 
+        !Number.isInteger(apiUniqueNumber) || apiUniqueNumber < 1
+        || typeof apiProviderId !== "string" || apiProviderId.trim() === ""
         || (mode !== "duration" && mode !== "semaphore") 
         || !registryEntry || typeof registryEntry !== "object" 
         || typeof registryEntry.handleExit !== "function" 
@@ -123,29 +125,13 @@ export function registerLimiterByUniqueNumber(apiProviderId, mode, registryEntry
     ) {
         throw new RateLimiterError(
             "ERR_INVALID_REGISTRY_ENTRY", 
-            "Failed to register primary limiter hot path: Invalid arguments. 'apiProviderId' must be a string, 'mode' must be 'duration' or 'semaphore', and 'registryEntry' must strictly implement the UniqueNumberRegistryEntry interface ('handleHotMessage' and 'handleExit')."
+            "Failed to register primary limiter hot path: Invalid arguments. 'apiUniqueNumber' must be a positive integer, 'apiProviderId' must be a non-empty string, 'mode' must be 'duration' or 'semaphore', and 'registryEntry' must strictly implement the UniqueNumberRegistryEntry interface."
         );
     };
-    let apiUniqueNumber = -1;
     const limiterRegistry = globalObject[API_PROVIDERS_UNIQUE_NUMBER_REGISTRY_KEY];
     if (!limiterRegistry) {
-        if (globalObject[API_PROVIDERS_COUNTER_KEY]) {
-            throw new RateLimiterError(
-                "ERR_INTERNAL_REGISTRY_CORRUPTION",
-                "Fatal state corruption: Primary limiter counter exists, but the unique number registry map is missing."
-            );
-        };
-        apiUniqueNumber = 1;
         globalObject[API_PROVIDERS_UNIQUE_NUMBER_REGISTRY_KEY] = new Map([[apiUniqueNumber, registryEntry]]);
-        globalObject[API_PROVIDERS_COUNTER_KEY] = apiUniqueNumber;
     } else {
-        if (!globalObject[API_PROVIDERS_COUNTER_KEY]) {
-            throw new RateLimiterError(
-                "ERR_INTERNAL_REGISTRY_CORRUPTION",
-                "Fatal state corruption: Primary limiter unique number registry map exists, but the counter is missing."
-            );
-        };
-        apiUniqueNumber = ++globalObject[API_PROVIDERS_COUNTER_KEY];
         if (limiterRegistry.has(apiUniqueNumber)) {
             throw new RateLimiterError(
                 "ERR_DUPLICATE_UNIQUE_NUMBER", 
@@ -160,6 +146,15 @@ export function registerLimiterByUniqueNumber(apiProviderId, mode, registryEntry
         if (!worker) continue;
         worker.send({apiProviderId, mode, apiUniqueNumber});
     };
-    //
-    return apiUniqueNumber;
+};
+
+/** @returns {number} */
+export function generateApiUniqueNumber() {
+    if (!globalObject[API_PROVIDERS_COUNTER_KEY]) {
+        // start from 1 to avoid falsy zero => may confuse in condition checks
+        globalObject[API_PROVIDERS_COUNTER_KEY] = 1;
+    } else {
+        globalObject[API_PROVIDERS_COUNTER_KEY]++;
+    }
+    return globalObject[API_PROVIDERS_COUNTER_KEY];
 };
