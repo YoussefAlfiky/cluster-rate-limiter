@@ -4,44 +4,24 @@ import { performance } from "node:perf_hooks";
 import { setTimeout as setTimeoutPromise } from "node:timers/promises";
 import { Queue } from "../../lib/Queue.js";
 import { Float64SortedQueue } from "../../lib/Float64SortedQueue.js";
-import { validatePrimaryLimiterConstructorInput } from "./validators/validatePrimaryLimiter.js";
-import { registerPrimaryLimiter } from "./registry/registerPrimaryLimiter.js";
-import { EventListenerRegistry } from "../events/EventListenerRegistry.js";
-import { triggerEvent, emitSafeError } from "../events/triggerEvent.js"
+import { BasePrimaryLimiter, _kTriggerGrantFailureEvent } from "./BasePrimaryLimiter.js";
 import { IPC_SIGNATURE, IPC_OPCODES, IPC_INDEX } from "../shared/ipc-protocol.js";
+import { registerLimiterByUniqueNumber } from "./registry/registerPrimaryLimiter.js";
 
 /**
     * @typedef {import("node:cluster").Worker} Worker
     * @typedef {{clusterId: number, requestId: number}} ClusterRequest
 */
-/**
-    * @typedef {(workerId: number, apiProviderId: string, requestId: number, err: unknown) => void | Promise<void>} GrantPermitFailureCallback
-    * @typedef {(err: unknown) => void | Promise<void>} ErrorCallback
-    * 
-    * @typedef {Object} PrimaryListenerBuckets
-    * @property {{ on: Set<GrantPermitFailureCallback>, once: Set<GrantPermitFailureCallback> }} grantPermitFailure
-    * @property {{ on: Set<ErrorCallback>, once: Set<ErrorCallback> }} error
-*/
 
-/** 
-    * @extends {EventListenerRegistry<PrimaryListenerBuckets>}
+/**
+    * Primary-side sliding window (duration-based) rate limiter.
+    * 
+    * Manages capacity strictly by time, ensuring that no more than `maxConcurrentRequests` 
+    * are granted within the specified `durationInSeconds`.
+    * 
+    * @extends {BasePrimaryLimiter}
 */
-export class PrimaryDurationLimiter extends EventListenerRegistry {
-    /** 
-        * @readonly
-        * @type {string}
-    */
-    #apiProviderId;
-    /**
-        * @readonly
-        * @type {number} 
-    */
-    #apiUniqueNumber = 0 /* temp value till init */;
-    /** 
-        * @readonly
-        * @type {Map<number, Worker>}
-    */
-    #clusters = new Map();
+export class PrimaryDurationLimiter extends BasePrimaryLimiter {
     /** 
         * @readonly
         * @type {Queue<ClusterRequest>}
@@ -62,18 +42,36 @@ export class PrimaryDurationLimiter extends EventListenerRegistry {
         * @type {number}
     */
     #maxConcurrentRequests = 0;
-    /**
-        * @readonly
-        * @type {"duration"} 
-    */
-    #mode = "duration";
-    /**
-        * @readonly
-        * @type {PrimaryListenerBuckets} 
-    */
-    #listenerBuckets;
     #isGrantingPermitsForPendingRequests = false;
-    //
+    /**
+        * Creates a duration-based cluster rate limiter.
+        *
+        * @param {string} apiProviderId Unique identifier for the target API (e.g., 'stripe-api').
+        * @param {number} maxConcurrentRequests Maximum number of requests allowed within the duration window.
+        * @param {number} durationInSeconds The length of the sliding time window in seconds.
+        *
+        * @throws {RateLimiterError} If instantiated outside the primary cluster process.
+        * @throws {RateLimiterError} If arguments are malformed or invalid.
+    */
+    constructor(apiProviderId, maxConcurrentRequests, durationInSeconds) {
+        super(apiProviderId, "duration", maxConcurrentRequests, durationInSeconds);
+        //  Register
+        registerLimiterByUniqueNumber(this._apiUniqueNumber, apiProviderId, "duration", {
+            handleHotMessage: (worker, msg) => this.#handleHotMessage(worker, msg),
+            handleExit: () => this.#grantPendingRequests()
+        });
+        // Assign Properties Values
+        this.#maxConcurrentRequests = maxConcurrentRequests;
+        this.#rateLimitDurationInMilliSeconds = (durationInSeconds * 1000) + 50 /* safety jitter buffer */;
+        this.#grantTimestampSortedLog = new Float64SortedQueue(maxConcurrentRequests);
+    };
+    /**
+        * Sweeps naturally expired timestamps from the log. 
+        * 
+        * If capacity is exhausted, it pauses execution without blocking the event loop, 
+        * waiting exactly until the oldest timestamp expires to free a slot.
+        * @returns {Promise<void>}
+    */
     async #pruneGrantLog() {
         // Instantly sweep away any naturally expired timestamps
         this.#grantTimestampSortedLog.removeBefore(performance.now() - this.#rateLimitDurationInMilliSeconds);
@@ -89,25 +87,36 @@ export class PrimaryDurationLimiter extends EventListenerRegistry {
             this.#grantTimestampSortedLog.removeBefore(performance.now() - this.#rateLimitDurationInMilliSeconds);
         };
     };
+    /**
+        * Processes the pending requests queue sequentially. 
+        * Uses an async lock to prevent overlapping executions while waiting for capacity.
+        * @returns {Promise<void>}
+    */
     async #grantPendingRequests() {
-        if (this.#isGrantingPermitsForPendingRequests) return;
+        if (this.#isGrantingPermitsForPendingRequests || !cluster.workers) return;
         this.#isGrantingPermitsForPendingRequests = true;
         try {
             while ( this.#requestsQueue.size > 0 ) {
                 await this.#pruneGrantLog();
                 // this.#requestsQueue.dequeue() can't be undefined while requestsQueue.size > 0
                 const { clusterId, requestId } = /**@type {ClusterRequest}*/(this.#requestsQueue.dequeue());
-                const worker = this.#clusters.get(clusterId);
-                if (!worker) continue;
+                const worker = cluster.workers[clusterId];
+                if (!worker || worker.isDead()) continue;
                 const timestamp = performance.now();
                 this.#grantTimestampSortedLog.enqueue(timestamp);
-                this.#grantRequest(worker, [IPC_SIGNATURE, this.#apiUniqueNumber, IPC_OPCODES.GRANT, requestId], timestamp, 0);
+                this.#grantRequest(worker, [IPC_SIGNATURE, this._apiUniqueNumber, IPC_OPCODES.GRANT, requestId], timestamp, 0);
             };
         } finally {
             this.#isGrantingPermitsForPendingRequests = false;
         };
     };
-    /** @param {number} failedRequestTimestamp */
+    /** 
+        * Safely reclaims a capacity slot if an IPC transmission fails.
+        * Uses a conservative O(1) mathematical shift by dropping the oldest timestamp 
+        * rather than performing an expensive array search for the exact failed timestamp.
+        * 
+        * @param {number} failedRequestTimestamp The exact time the failed request was originally granted.
+    */
     #refundSlot(failedRequestTimestamp) {
         /* Prevent "Double Refund": Only dequeue if the failed request's 
         original timestamp hasn't already been naturally pruned by time!*/
@@ -123,41 +132,45 @@ export class PrimaryDurationLimiter extends EventListenerRegistry {
         this.#grantPendingRequests();
     };
     /** 
-        * @param {Worker} worker
-        * @param {number[]} message 
-        * @param {number} timestamp
-        * @param {number} retryCount
+        * Transmits the capacity grant to the target worker via IPC.
+        * Implements robust fault tolerance: handles synchronous APM wrapper crashes, 
+        * asynchronous channel closures, and transient transmission failures via retries.
+        * 
+        * @param {Worker} worker The target Node.js cluster worker.
+        * @param {number[]} message The high-performance integer array IPC payload.
+        * @param {number} timestamp The timestamp when the permit was granted.
+        * @param {number} retryCount Current retry iteration (max 3).
     */
     #grantRequest(worker, message, timestamp, retryCount) {
-        worker.send(message, (err) => {
-            if (err) {
-                if (worker.isDead()) {
-                    this.#refundSlot(timestamp);
-                    this.#handleWorkerExit(worker.id);
-                } else {
-                    if (retryCount < 3) {
-                        setTimeout(() => this.#grantRequest(worker, message, timestamp, retryCount + 1), 50);
-                    } else {
+        try {
+            worker.send(message, (err) => {
+                if (err) {
+                    if (worker.isDead()) {
                         this.#refundSlot(timestamp);
-                        if (!triggerEvent(
-                            this.#listenerBuckets.grantPermitFailure,
-                            this.#listenerBuckets.error,
-                            worker.id,
-                            this.#apiProviderId,
-                            message[IPC_INDEX.PAYLOAD] /*request id*/,
-                            err
-                        )) {
-                            emitSafeError(this.#listenerBuckets.error, err);
-                        }
+                    } else {
+                        if (retryCount < 3) {
+                            setTimeout(() => this.#grantRequest(worker, message, timestamp, retryCount + 1), 50);
+                        } else {
+                            this.#refundSlot(timestamp);
+                            this[_kTriggerGrantFailureEvent](worker.id, message[IPC_INDEX.PAYLOAD] /*request id*/, err);
+                        };
                     };
                 };
+            });
+        } catch (syncErr) {
+            this.#refundSlot(timestamp);
+            if (worker.isDead()) return;
+            try {
+                const normalizedError = syncErr instanceof Error ? syncErr : new Error(String(syncErr));
+                this[_kTriggerGrantFailureEvent](worker.id, message[IPC_INDEX.PAYLOAD]/*request id*/, normalizedError);
+            } catch {
+                process.emitWarning(
+                    `Failed to route synchronous IPC error for worker ${worker.id}. The error object may be corrupted.`,
+                    "RateLimiterWarning",
+                    "A critical exception was swallowed during permit grant error handling."
+                );
             };
-        });
-    };
-    /** @param {number} workerId */
-    #handleWorkerExit(workerId) {
-        this.#clusters.delete(workerId);
-        this.#grantPendingRequests();
+        };
     };
     /** 
         * @param {Worker} worker
@@ -168,69 +181,7 @@ export class PrimaryDurationLimiter extends EventListenerRegistry {
         if (opCode === IPC_OPCODES.ACQUIRE) {
             const requestId = msg[IPC_INDEX.PAYLOAD]
             this.#requestsQueue.enqueue({clusterId: worker.id, requestId});
-            this.#clusters.set(worker.id, worker);
             this.#grantPendingRequests();
-        };
-    };
-    /** 
-        * @param {Worker} worker
-        * @param {Object} msg 
-    */
-    #handleColdMessage(worker, msg) {
-        if ('acknowledgePrimary' in msg && msg.acknowledgePrimary === "pending") {
-            worker.send({apiProviderId: this.#apiProviderId, mode: this.#mode, apiUniqueNumber: this.#apiUniqueNumber});
-        };
-    };
-    get apiProviderId() {
-        return this.#apiProviderId;
-    };
-    /**
-        * Creates a cluster-wide rate limiter.
-        *
-        * @param {string} apiProviderId
-        * Unique identifier of the API provider whose requests are being limited.
-        *
-        * @param {number} maxConcurrentRequests
-        * Maximum number of permits available.
-        * 
-        * @param {number} durationInSeconds
-        * The length of the sliding request window in seconds.
-        *
-        * @throws {RateLimiterError}
-        * If this class is instantiated from a process which is not the primary cluster process.
-        *
-        * @throws {RateLimiterError}
-        * If `maxConcurrentRequests` is not a positive integer.
-    */
-    constructor(apiProviderId, maxConcurrentRequests, durationInSeconds) {
-        // Validate Input Configuration
-        validatePrimaryLimiterConstructorInput({mode: "duration", apiProviderId, maxConcurrentRequests, durationInSeconds});
-        // Initialize Event Registry
-        /** @type {PrimaryListenerBuckets} */
-        const listenerBuckets = {
-            grantPermitFailure: { on: new Set(), once: new Set() },
-            error: { on: new Set(), once: new Set() }
-        };
-        super(listenerBuckets);
-        // Assign Properties Values
-        this.#apiProviderId = apiProviderId;
-        this.#maxConcurrentRequests = maxConcurrentRequests;
-        this.#rateLimitDurationInMilliSeconds = (durationInSeconds * 1000) + 50 /* safety jitter buffer */;
-        this.#grantTimestampSortedLog = new Float64SortedQueue(maxConcurrentRequests);
-        this.#listenerBuckets = listenerBuckets;
-        // Register Limiter and Initiate IPC Listeners
-        this.#apiUniqueNumber = registerPrimaryLimiter(apiProviderId, {
-            limiter: /**@type {PrimaryDurationLimiter}*/(this),
-            config: `${maxConcurrentRequests}-${this.#mode}-${durationInSeconds}`,
-            handleHotMessage: (worker, msg) => this.#handleHotMessage(worker, msg),
-            handleColdMessage: (worker, msg) => this.#handleColdMessage(worker, msg),
-            handleExit: (workerId) => this.#handleWorkerExit(workerId)
-        });
-        // Execute Proactive Primary-Workers Handshake
-        for (const workerId in cluster.workers) {
-            const worker = cluster.workers[workerId];
-            if (!worker) continue;
-            worker.send({apiProviderId, mode: this.#mode, apiUniqueNumber: this.#apiUniqueNumber});
         };
     };
 };

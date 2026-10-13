@@ -1,44 +1,22 @@
 //@ts-check
 import cluster from "node:cluster";
 import { Queue } from "../../lib/Queue.js";
-import { validatePrimaryLimiterConstructorInput } from "./validators/validatePrimaryLimiter.js";
-import { registerPrimaryLimiter } from "./registry/registerPrimaryLimiter.js";
-import { EventListenerRegistry } from "../events/EventListenerRegistry.js";
-import { triggerEvent, emitSafeError } from "../events/triggerEvent.js"
+import { registerLimiterByUniqueNumber } from "./registry/registerPrimaryLimiter.js";
 import { IPC_SIGNATURE, IPC_OPCODES , IPC_INDEX } from "../shared/ipc-protocol.js";
+import { _kTriggerGrantFailureEvent, BasePrimaryLimiter } from "./BasePrimaryLimiter.js";
 
 /**
     * @typedef {import("node:cluster").Worker} Worker
     * @typedef {{clusterId: number, requestId: number}} ClusterRequest
 */
 /**
-    * @typedef {(workerId: number, apiProviderId: string, requestId: number, err: unknown) => void | Promise<void>} GrantPermitFailureCallback
-    * @typedef {(err: unknown) => void | Promise<void>} ErrorCallback
+    * Primary-side concurrency (semaphore-based) rate limiter.
     * 
-    * @typedef {Object} PrimaryListenerBuckets
-    * @property {{ on: Set<GrantPermitFailureCallback>, once: Set<GrantPermitFailureCallback> }} grantPermitFailure
-    * @property {{ on: Set<ErrorCallback>, once: Set<ErrorCallback> }} error
+    * Enforces a strict maximum number of active concurrent operations across the cluster. 
+    * 
+    * @extends {BasePrimaryLimiter}
 */
-
-/** 
-    * @extends {EventListenerRegistry<PrimaryListenerBuckets>}
-*/
-export class PrimarySemaphoreLimiter extends EventListenerRegistry {
-    /** 
-        * @readonly
-        * @type {string}
-    */
-    #apiProviderId;
-    /**
-        * @readonly
-        * @type {number} 
-    */
-    #apiUniqueNumber = 0 /* temp value till init */;
-    /** 
-        * @readonly
-        * @type {Map<number, Worker>}
-    */
-    #clusters = new Map();
+export class PrimarySemaphoreLimiter extends BasePrimaryLimiter {
     /** 
         * @readonly
         * @type {Queue<ClusterRequest>}
@@ -46,66 +24,93 @@ export class PrimarySemaphoreLimiter extends EventListenerRegistry {
     #requestsQueue = new Queue();
     /** 
         * @readonly
-        * @type {"semaphore"} 
-    */
-    #mode = "semaphore";
-    /** 
-        * @readonly
         * @type {Map<number, Set<number>>}
     */
     #clusterPendingRequests = new Map();
-    /**
-        * @readonly
-        * @type {PrimaryListenerBuckets} 
-    */
-    #listenerBuckets;
     /** @type {number} */
-    #remainingTokens = 0;
+    #remainingTokens = 0 /* temp value till init */;
+    /**
+        * Creates a semaphore-based cluster rate limiter.
+        *
+        * @param {string} apiProviderId Unique identifier for the target API (e.g., 'stripe-api').
+        * @param {number} maxConcurrentRequests Maximum number of active concurrent permits allowed.
+        *
+        * @throws {RateLimiterError} If instantiated outside the primary cluster process.
+        * @throws {RateLimiterError} If `maxConcurrentRequests` is not a positive integer.
+    */
+    constructor(apiProviderId, maxConcurrentRequests) {
+        super(apiProviderId, "semaphore", maxConcurrentRequests, null);
+        registerLimiterByUniqueNumber(this._apiUniqueNumber, apiProviderId, "semaphore", {
+            handleHotMessage: (worker, msg) => this.#handleHotMessage(worker, msg),
+            handleExit: (workerId) => this.#handleWorkerExit(workerId)
+        });
+        // Assign Properties Values
+        this.#remainingTokens = maxConcurrentRequests;
+    };
     /** 
-        * @param {Worker} worker
-        * @param {number[]} message 
-        * @param {number} retryCount
+        * Transmits the concurrency token grant to the target worker via IPC.
+        * Reclaims the leased token immediately if transmission fails permanently or the worker dies.
+        * 
+        * @param {Worker} worker The target Node.js cluster worker.
+        * @param {number[]} message The high-performance integer array IPC payload.
+        * @param {number} retryCount Current retry iteration (max 3).
     */
     #grantRequest(worker, message, retryCount) {
-        worker.send(message, (err) => {
-            if (err) {
-                if (worker.isDead()) {
-                    this.#handleWorkerExit(worker.id);
-                } else {
-                    if (retryCount < 3) {
-                        setTimeout(() => this.#grantRequest(worker, message, retryCount + 1), 50);
+        try {
+            worker.send(message, (err) => {
+                if (err) {
+                    if (worker.isDead()) {
+                        this.#handleWorkerExit(worker.id);
                     } else {
-                        const requestId = message[IPC_INDEX.PAYLOAD];
-                        this.#decrementWorkerUsage(worker.id, requestId);
-                        if (!triggerEvent(
-                            this.#listenerBuckets.grantPermitFailure, 
-                            this.#listenerBuckets.error,
-                            worker.id,
-                            this.#apiProviderId,
-                            requestId,
-                            err
-                        )) {
-                            emitSafeError(this.#listenerBuckets.error, err);
-                        }
+                        if (retryCount < 3) {
+                            setTimeout(() => this.#grantRequest(worker, message, retryCount + 1), 50);
+                        } else {
+                            const requestId = message[IPC_INDEX.PAYLOAD];
+                            this.#decrementWorkerUsage(worker.id, requestId);
+                            this[_kTriggerGrantFailureEvent](worker.id, requestId, err);
+                        };
                     };
                 };
+            });
+        } catch (syncErr) {
+            if (worker.isDead()) {
+                this.#handleWorkerExit(worker.id);
+                return
             };
-        });
+            const requestId = message[IPC_INDEX.PAYLOAD];
+            this.#decrementWorkerUsage(worker.id, requestId);
+            try {
+                const normalizedError = syncErr instanceof Error ? syncErr : new Error(String(syncErr));
+                this[_kTriggerGrantFailureEvent](worker.id, requestId, normalizedError);
+            } catch {
+                process.emitWarning(
+                    `Failed to route synchronous IPC error for worker ${worker.id}. The error object may be corrupted.`,
+                    "RateLimiterWarning",
+                    "A critical exception was swallowed during permit grant error handling."
+                );
+            };
+        };
     };
+    /**
+        * Synchronously dispatches available tokens to queued requests in FIFO order.
+    */
     #grantPendingRequests() {
+        if (!cluster.workers) return;
         while ( this.#requestsQueue.size > 0 ) {
             if (this.#remainingTokens <= 0) break;
             // this.#requestsQueue.dequeue() can't be undefined while requestsQueue.size > 0
             const { clusterId, requestId } = /**@type {ClusterRequest}*/(this.#requestsQueue.dequeue());
-            const worker = this.#clusters.get(clusterId);
-            if (!worker) continue;
+            const worker = cluster.workers[clusterId];
+            if (!worker || worker.isDead()) continue;
             this.#incrementWorkerUsage(clusterId, requestId);
-            this.#grantRequest(worker, [IPC_SIGNATURE, this.#apiUniqueNumber, IPC_OPCODES.GRANT, requestId], 0);
+            this.#grantRequest(worker, [IPC_SIGNATURE, this._apiUniqueNumber, IPC_OPCODES.GRANT, requestId], 0);
         };
     };
     /** 
-        * @param {number} clusterId
-        * @param {number} requestId 
+        * Records a new token against the target worker and decrements available capacity.
+        * 
+        * @param {number} clusterId The ID of the worker receiving the permit.
+        * @param {number} requestId The unique ID of the granted request.
     */
     #incrementWorkerUsage(clusterId, requestId) {
         const workerPendingRequestsSet = this.#clusterPendingRequests.get(clusterId);
@@ -117,8 +122,11 @@ export class PrimarySemaphoreLimiter extends EventListenerRegistry {
         this.#remainingTokens--;
     };
     /** 
-        * @param {number} clusterId
-        * @param {number} requestId 
+        * Releases a specific leased token from a worker, restores capacity, and triggers the queue.
+        * Ignores duplicate or invalid release attempts safely.
+        * 
+        * @param {number} clusterId The ID of the worker releasing the permit.
+        * @param {number} requestId The unique ID of the completed request.
     */
     #decrementWorkerUsage(clusterId, requestId) {
         const workerPendingRequestsSet = this.#clusterPendingRequests.get(clusterId);
@@ -129,7 +137,11 @@ export class PrimarySemaphoreLimiter extends EventListenerRegistry {
             this.#grantPendingRequests();
         };
     };
-    /** @param {number} clusterId */
+    /** 
+        * Idempotently reclaims all active tokens leased to a disconnected or dead worker.
+        * 
+        * @param {number} clusterId The ID of the exited worker.
+    */
     #reclaimDeadWorkerTokens(clusterId) {
         const workerPendingRequestsSet = this.#clusterPendingRequests.get(clusterId);
         this.#clusterPendingRequests.delete(clusterId);
@@ -138,7 +150,6 @@ export class PrimarySemaphoreLimiter extends EventListenerRegistry {
     /** @param {number} workerId */
     #handleWorkerExit(workerId) {
         this.#reclaimDeadWorkerTokens(workerId);
-        this.#clusters.delete(workerId);
         this.#grantPendingRequests();
     };
     /** 
@@ -150,66 +161,9 @@ export class PrimarySemaphoreLimiter extends EventListenerRegistry {
         const opCode = msg[IPC_INDEX.OPCODE];
         if (opCode === IPC_OPCODES.ACQUIRE) {
             this.#requestsQueue.enqueue({clusterId: worker.id, requestId});
-            this.#clusters.set(worker.id, worker);
             this.#grantPendingRequests();
         } else if (opCode === IPC_OPCODES.RELEASE) {
             this.#decrementWorkerUsage(worker.id, requestId);
-        };
-    };
-    /** 
-        * @param {Worker} worker
-        * @param {Object} msg 
-    */
-    #handleColdMessage(worker, msg) {
-        if ('acknowledgePrimary' in msg && msg.acknowledgePrimary === "pending") {
-            worker.send({apiProviderId: this.#apiProviderId, mode: this.#mode, apiUniqueNumber: this.#apiUniqueNumber});
-        };
-    };
-    get apiProviderId() {
-        return this.#apiProviderId;
-    };
-    /**
-        * Creates a cluster-wide rate limiter.
-        *
-        * @param {string} apiProviderId
-        * Unique identifier of the API provider whose requests are being limited.
-        *
-        * @param {number} maxConcurrentRequests
-        * Maximum number of permits available.
-        *
-        * @throws {RateLimiterError}
-        * If this class is instantiated from a process which is not the primary cluster process.
-        *
-        * @throws {RateLimiterError}
-        * If `maxConcurrentRequests` is not a positive integer.
-    */
-    constructor(apiProviderId, maxConcurrentRequests) {
-        // Validate Input Configuration
-        validatePrimaryLimiterConstructorInput({mode: "semaphore", apiProviderId, maxConcurrentRequests});
-        // Initialize Event Registry
-        /** @type {PrimaryListenerBuckets} */
-        const listenerBuckets = {
-            grantPermitFailure: { on: new Set(), once: new Set() },
-            error: { on: new Set(), once: new Set() }
-        };
-        super(listenerBuckets);
-        // Assign Properties Values
-        this.#apiProviderId = apiProviderId;
-        this.#remainingTokens = maxConcurrentRequests;
-        this.#listenerBuckets = listenerBuckets;
-        // Register Limiter and Initiate IPC Listeners
-        this.#apiUniqueNumber = registerPrimaryLimiter(apiProviderId, {
-            limiter: /**@type {PrimarySemaphoreLimiter}*/(this),
-            config: `${maxConcurrentRequests}-${this.#mode}-${undefined}`,
-            handleHotMessage: (worker, msg) => this.#handleHotMessage(worker, msg),
-            handleColdMessage: (worker, msg) => this.#handleColdMessage(worker, msg),
-            handleExit: (workerId) => this.#handleWorkerExit(workerId)
-        });
-        // Execute Proactive Primary-Workers Handshake
-        for (const workerId in cluster.workers) {
-            const worker = cluster.workers[workerId];
-            if (!worker) continue;
-            worker.send({apiProviderId, mode: this.#mode, apiUniqueNumber: this.#apiUniqueNumber});
         };
     };
 };
