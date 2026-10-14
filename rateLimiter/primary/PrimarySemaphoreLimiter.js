@@ -1,6 +1,6 @@
 //@ts-check
 import cluster from "node:cluster";
-import { Queue } from "../../lib/Queue.js";
+import { Int32Queue } from "../../lib/Int32Queue.js";
 import { registerLimiterByUniqueNumber } from "./registry/registerPrimaryLimiter.js";
 import { IPC_SIGNATURE, IPC_OPCODES , IPC_INDEX } from "../shared/ipc-protocol.js";
 import { _kTriggerGrantFailureEvent, BasePrimaryLimiter } from "./BasePrimaryLimiter.js";
@@ -17,11 +17,10 @@ import { _kTriggerGrantFailureEvent, BasePrimaryLimiter } from "./BasePrimaryLim
     * @extends {BasePrimaryLimiter}
 */
 export class PrimarySemaphoreLimiter extends BasePrimaryLimiter {
-    /** 
-        * @readonly
-        * @type {Queue<ClusterRequest>}
-    */
-    #requestsQueue = new Queue();
+    /** @readonly*/
+    #requestsIdParallelQueue = new Int32Queue();
+    /** @readonly*/
+    #clustersIdParallelQueue = new Int32Queue();
     /** 
         * @readonly
         * @type {Map<number, Set<number>>}
@@ -96,10 +95,14 @@ export class PrimarySemaphoreLimiter extends BasePrimaryLimiter {
     */
     #grantPendingRequests() {
         if (!cluster.workers) return;
-        while ( this.#requestsQueue.size > 0 ) {
+        while ( this.#requestsIdParallelQueue.size > 0 ) {
             if (this.#remainingTokens <= 0) break;
-            // this.#requestsQueue.dequeue() can't be undefined while requestsQueue.size > 0
-            const { clusterId, requestId } = /**@type {ClusterRequest}*/(this.#requestsQueue.dequeue());
+            /* 
+                this.#requestsIdParallelQueue.dequeue() and this.#clustersIdParallelQueue.dequeue()
+                can't be undefined while requestsIdParallelQueue.size > 0 
+            */
+            const requestId = /**@type {number}*/(this.#requestsIdParallelQueue.dequeue());
+            const clusterId = /**@type {number}*/(this.#clustersIdParallelQueue.dequeue());
             const worker = cluster.workers[clusterId];
             if (!worker || worker.isDead()) continue;
             this.#incrementWorkerUsage(clusterId, requestId);
@@ -160,7 +163,8 @@ export class PrimarySemaphoreLimiter extends BasePrimaryLimiter {
         const requestId = msg[IPC_INDEX.PAYLOAD];
         const opCode = msg[IPC_INDEX.OPCODE];
         if (opCode === IPC_OPCODES.ACQUIRE) {
-            this.#requestsQueue.enqueue({clusterId: worker.id, requestId});
+            this.#requestsIdParallelQueue.enqueue(requestId);
+            this.#clustersIdParallelQueue.enqueue(worker.id);
             this.#grantPendingRequests();
         } else if (opCode === IPC_OPCODES.RELEASE) {
             this.#decrementWorkerUsage(worker.id, requestId);

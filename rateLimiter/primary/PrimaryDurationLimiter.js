@@ -2,16 +2,13 @@
 import cluster from "node:cluster";
 import { performance } from "node:perf_hooks";
 import { setTimeout as setTimeoutPromise } from "node:timers/promises";
-import { Queue } from "../../lib/Queue.js";
+import { Int32Queue } from "../../lib/Int32Queue.js"
 import { Float64SortedQueue } from "../../lib/Float64SortedQueue.js";
 import { BasePrimaryLimiter, _kTriggerGrantFailureEvent } from "./BasePrimaryLimiter.js";
 import { IPC_SIGNATURE, IPC_OPCODES, IPC_INDEX } from "../shared/ipc-protocol.js";
 import { registerLimiterByUniqueNumber } from "./registry/registerPrimaryLimiter.js";
 
-/**
-    * @typedef {import("node:cluster").Worker} Worker
-    * @typedef {{clusterId: number, requestId: number}} ClusterRequest
-*/
+/** @typedef {import("node:cluster").Worker} Worker */
 
 /**
     * Primary-side sliding window (duration-based) rate limiter.
@@ -22,11 +19,10 @@ import { registerLimiterByUniqueNumber } from "./registry/registerPrimaryLimiter
     * @extends {BasePrimaryLimiter}
 */
 export class PrimaryDurationLimiter extends BasePrimaryLimiter {
-    /** 
-        * @readonly
-        * @type {Queue<ClusterRequest>}
-    */
-    #requestsQueue = new Queue();
+    /** @readonly*/
+    #requestsIdParallelQueue = new Int32Queue();
+    /** @readonly*/
+    #clustersIdParallelQueue = new Int32Queue();
     /** 
         * @readonly
         * @type {Float64SortedQueue}
@@ -96,10 +92,14 @@ export class PrimaryDurationLimiter extends BasePrimaryLimiter {
         if (this.#isGrantingPermitsForPendingRequests || !cluster.workers) return;
         this.#isGrantingPermitsForPendingRequests = true;
         try {
-            while ( this.#requestsQueue.size > 0 ) {
+            while ( this.#requestsIdParallelQueue.size > 0 ) {
                 await this.#pruneGrantLog();
-                // this.#requestsQueue.dequeue() can't be undefined while requestsQueue.size > 0
-                const { clusterId, requestId } = /**@type {ClusterRequest}*/(this.#requestsQueue.dequeue());
+                /* 
+                    this.#requestsIdParallelQueue.dequeue() and this.#clustersIdParallelQueue.dequeue()
+                    can't be undefined while requestsIdParallelQueue.size > 0 
+                */
+                const requestId = /**@type {number}*/(this.#requestsIdParallelQueue.dequeue());
+                const clusterId = /**@type {number}*/(this.#clustersIdParallelQueue.dequeue());
                 const worker = cluster.workers[clusterId];
                 if (!worker || worker.isDead()) continue;
                 const timestamp = performance.now();
@@ -180,7 +180,8 @@ export class PrimaryDurationLimiter extends BasePrimaryLimiter {
         const opCode = msg[IPC_INDEX.OPCODE];
         if (opCode === IPC_OPCODES.ACQUIRE) {
             const requestId = msg[IPC_INDEX.PAYLOAD]
-            this.#requestsQueue.enqueue({clusterId: worker.id, requestId});
+            this.#requestsIdParallelQueue.enqueue(requestId)
+            this.#clustersIdParallelQueue.enqueue(worker.id)
             this.#grantPendingRequests();
         };
     };
