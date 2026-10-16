@@ -92,7 +92,9 @@ export class BasePrimaryLimiter extends EventListenerRegistry {
         for (const workerId in cluster.workers) {
             const worker = cluster.workers[workerId];
             if (!worker) continue;
-            worker.send({apiProviderId, mode, apiUniqueNumber: this.#apiUniqueNumber});
+            worker.send({apiProviderId, mode, apiUniqueNumber: this.#apiUniqueNumber}, (err) => {
+                if (err && !worker.isDead()) emitSafeError(this.#listenerBuckets.error, err);
+            });
         };
     };
     /** @returns {string} */
@@ -144,6 +146,8 @@ export class BasePrimaryLimiter extends EventListenerRegistry {
                     apiProviderId: this.#apiProviderId, 
                     mode: this.#mode, 
                     apiUniqueNumber: this.#apiUniqueNumber
+                }, (err) => {
+                    if (err && !worker.isDead()) emitSafeError(this.#listenerBuckets.error, err);
                 });
             } catch (syncErr) {
                 if (worker.isDead()) return; 
