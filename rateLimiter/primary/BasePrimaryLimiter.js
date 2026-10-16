@@ -1,4 +1,5 @@
 //@ts-check
+import cluster from "node:cluster";
 import { EventListenerRegistry } from "../events/EventListenerRegistry.js";
 import { triggerEvent, emitSafeError } from "../events/triggerEvent.js";
 import { validatePrimaryLimiter } from "./validators/validatePrimaryLimiter.js";
@@ -87,6 +88,12 @@ export class BasePrimaryLimiter extends EventListenerRegistry {
         this.#listenerBuckets = listenerBuckets;
         this.#apiProviderId = apiProviderId;
         this.#mode = mode;
+        // Execute Proactive Primary-Workers Handshake
+        for (const workerId in cluster.workers) {
+            const worker = cluster.workers[workerId];
+            if (!worker) continue;
+            worker.send({apiProviderId, mode, apiUniqueNumber: this.#apiUniqueNumber});
+        };
     };
     /** @returns {string} */
     get apiProviderId() {

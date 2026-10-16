@@ -52,7 +52,7 @@ export class PrimaryDurationLimiter extends BasePrimaryLimiter {
     constructor(apiProviderId, maxConcurrentRequests, durationInSeconds) {
         super(apiProviderId, "duration", maxConcurrentRequests, durationInSeconds);
         //  Register
-        registerLimiterByUniqueNumber(this._apiUniqueNumber, apiProviderId, "duration", {
+        registerLimiterByUniqueNumber(this._apiUniqueNumber, {
             handleHotMessage: (worker, msg) => this.#handleHotMessage(worker, msg),
             handleExit: () => this.#grantPendingRequests()
         });

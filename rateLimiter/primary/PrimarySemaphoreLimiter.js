@@ -39,7 +39,7 @@ export class PrimarySemaphoreLimiter extends BasePrimaryLimiter {
     */
     constructor(apiProviderId, maxConcurrentRequests) {
         super(apiProviderId, "semaphore", maxConcurrentRequests, null);
-        registerLimiterByUniqueNumber(this._apiUniqueNumber, apiProviderId, "semaphore", {
+        registerLimiterByUniqueNumber(this._apiUniqueNumber, {
             handleHotMessage: (worker, msg) => this.#handleHotMessage(worker, msg),
             handleExit: (workerId) => this.#handleWorkerExit(workerId)
         });

@@ -97,35 +97,21 @@ export function registerLimiterByProviderId(apiProviderId, registryEntry) {
 /**
     * Upgrades a primary rate limiter into the O(1) hot-path routing map.
     * 
-    * **Architecture Note:**
-    * After registering the high-performance mapping using the pre-generated `apiUniqueNumber`, 
-    * it executes a proactive broadcast to all currently active cluster workers. This ensures 
-    * that even if workers boot *before* this primary limiter, they immediately receive their 
-    * fast-path authorization.
-    * 
-    * **Developer Caution:**
-    * Because this is internal routing infrastructure, passing malformed arguments intentionally 
-    * throws a synchronous error to fail-fast and prevent silent IPC corruption during development.
-    * 
     * @param {number} apiUniqueNumber The V8-optimized integer ID generated for this limiter.
-    * @param {string} apiProviderId The unique string identifier of the target API.
-    * @param {"semaphore" | "duration"} mode The operational rate-limiting strategy.
     * @param {UniqueNumberRegistryEntry} registryEntry The hot-path capacity handler and worker exit cleanup callback.
     * @throws {RateLimiterError} If arguments are malformed, or if an `apiUniqueNumber` collision occurs.
     * @returns {void}
 */
-export function registerLimiterByUniqueNumber(apiUniqueNumber, apiProviderId, mode, registryEntry) {
+export function registerLimiterByUniqueNumber(apiUniqueNumber, registryEntry) {
     if (
         !Number.isInteger(apiUniqueNumber) || apiUniqueNumber < 1
-        || typeof apiProviderId !== "string" || apiProviderId.trim() === ""
-        || (mode !== "duration" && mode !== "semaphore") 
         || !registryEntry || typeof registryEntry !== "object" 
         || typeof registryEntry.handleExit !== "function" 
         || typeof registryEntry.handleHotMessage !== "function"
     ) {
         throw new RateLimiterError(
             "ERR_INVALID_REGISTRY_ENTRY", 
-            "Failed to register primary limiter hot path: Invalid arguments. 'apiUniqueNumber' must be a positive integer, 'apiProviderId' must be a non-empty string, 'mode' must be 'duration' or 'semaphore', and 'registryEntry' must strictly implement the UniqueNumberRegistryEntry interface."
+            "Failed to register primary limiter hot path: Invalid arguments. 'apiUniqueNumber' must be a positive integer, and 'registryEntry' must strictly implement the UniqueNumberRegistryEntry interface."
         );
     };
     const limiterRegistry = globalObject[API_PROVIDERS_UNIQUE_NUMBER_REGISTRY_KEY];
@@ -139,12 +125,6 @@ export function registerLimiterByUniqueNumber(apiUniqueNumber, apiProviderId, mo
             );
         }
         limiterRegistry.set(apiUniqueNumber, registryEntry);
-    };
-    // Execute Proactive Primary-Workers Handshake
-    for (const workerId in cluster.workers) {
-        const worker = cluster.workers[workerId];
-        if (!worker) continue;
-        worker.send({apiProviderId, mode, apiUniqueNumber});
     };
 };
 
