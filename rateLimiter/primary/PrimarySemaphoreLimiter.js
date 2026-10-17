@@ -28,6 +28,7 @@ export class PrimarySemaphoreLimiter extends BasePrimaryLimiter {
     #clusterPendingRequests = new Map();
     /** @type {number} */
     #remainingTokens = 0 /* temp value till init */;
+    #isGrantingPermitsForPendingRequests = false;
     /**
         * Creates a semaphore-based cluster rate limiter.
         *
@@ -94,20 +95,25 @@ export class PrimarySemaphoreLimiter extends BasePrimaryLimiter {
         * Synchronously dispatches available tokens to queued requests in FIFO order.
     */
     #grantPendingRequests() {
-        if (!cluster.workers) return;
-        while ( this.#requestsIdParallelQueue.size > 0 ) {
-            if (this.#remainingTokens <= 0) break;
-            /* 
-                this.#requestsIdParallelQueue.dequeue() and this.#clustersIdParallelQueue.dequeue()
-                can't be undefined while requestsIdParallelQueue.size > 0 
-            */
-            const requestId = /**@type {number}*/(this.#requestsIdParallelQueue.dequeue());
-            const clusterId = /**@type {number}*/(this.#clustersIdParallelQueue.dequeue());
-            const worker = cluster.workers[clusterId];
-            if (!worker || worker.isDead()) continue;
-            this.#incrementWorkerUsage(clusterId, requestId);
-            this.#grantRequest(worker, [IPC_SIGNATURE, this._apiUniqueNumber, IPC_OPCODES.GRANT, requestId], 0);
-        };
+        if (this.#isGrantingPermitsForPendingRequests || !cluster.workers) return;
+        this.#isGrantingPermitsForPendingRequests = true;
+        try {
+            while ( this.#requestsIdParallelQueue.size > 0 ) {
+                if (this.#remainingTokens <= 0) break;
+                /* 
+                    this.#requestsIdParallelQueue.dequeue() and this.#clustersIdParallelQueue.dequeue()
+                    can't be undefined while requestsIdParallelQueue.size > 0 
+                */
+                const requestId = /**@type {number}*/(this.#requestsIdParallelQueue.dequeue());
+                const clusterId = /**@type {number}*/(this.#clustersIdParallelQueue.dequeue());
+                const worker = cluster.workers[clusterId];
+                if (!worker || worker.isDead()) continue;
+                this.#incrementWorkerUsage(clusterId, requestId);
+                this.#grantRequest(worker, [IPC_SIGNATURE, this._apiUniqueNumber, IPC_OPCODES.GRANT, requestId], 0);
+            };
+        } finally {
+            this.#isGrantingPermitsForPendingRequests = false;
+        }
     };
     /** 
         * Records a new token against the target worker and decrements available capacity.
