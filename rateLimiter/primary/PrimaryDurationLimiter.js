@@ -84,7 +84,7 @@ export class PrimaryDurationLimiter extends BasePrimaryLimiter {
             const remainingTimeTillNextTick = this.#rateLimitDurationInMilliSeconds - (performance.now() - firstGrantTimeStamp);
             if (remainingTimeTillNextTick > 0) {
                 // Wait exactly until the oldest timestamp falls out of the sliding window
-                await setTimeoutPromise(remainingTimeTillNextTick);
+                await setTimeoutPromise(Math.min(remainingTimeTillNextTick, 2_147_483_647 /*24.8 days*/));
             };
             this.#grantTimestampSortedLog.removeBefore(performance.now() - this.#rateLimitDurationInMilliSeconds);
         };
