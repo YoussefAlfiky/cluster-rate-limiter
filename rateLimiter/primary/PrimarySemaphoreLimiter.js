@@ -1,7 +1,7 @@
 //@ts-check
 import cluster from "node:cluster";
 import { Int32Queue } from "../../lib/Int32Queue.js";
-import { registerLimiterByUniqueNumber } from "./registry/registerPrimaryLimiter.js";
+import { registerLimiterByUniqueNumber } from "./registry/primaryLimiterRegistry.js";
 import { IPC_SIGNATURE, IPC_OPCODES , IPC_INDEX } from "../shared/ipc-protocol.js";
 import { _kTriggerGrantFailureEvent, BasePrimaryLimiter } from "./BasePrimaryLimiter.js";
 

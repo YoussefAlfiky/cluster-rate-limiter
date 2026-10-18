@@ -3,7 +3,7 @@ import cluster from "node:cluster";
 import { EventListenerRegistry } from "../events/EventListenerRegistry.js";
 import { triggerEvent, emitSafeError } from "../events/triggerEvent.js";
 import { validatePrimaryLimiter } from "./validators/validatePrimaryLimiter.js";
-import { generateApiUniqueNumber, registerLimiterByProviderId } from "./registry/registerPrimaryLimiter.js";
+import { generateApiUniqueNumber, registerLimiterByProviderId } from "./registry/primaryLimiterRegistry.js";
 import { RateLimiterError } from "../errors/RateLimiterError.js";
 
 /**

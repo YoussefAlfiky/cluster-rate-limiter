@@ -6,7 +6,7 @@ import { Int32Queue } from "../../lib/Int32Queue.js"
 import { Float64SortedQueue } from "../../lib/Float64SortedQueue.js";
 import { BasePrimaryLimiter, _kTriggerGrantFailureEvent } from "./BasePrimaryLimiter.js";
 import { IPC_SIGNATURE, IPC_OPCODES, IPC_INDEX } from "../shared/ipc-protocol.js";
-import { registerLimiterByUniqueNumber, unregisterLimiter } from "./registry/registerPrimaryLimiter.js";
+import { registerLimiterByUniqueNumber, unregisterLimiter } from "./registry/primaryLimiterRegistry.js";
 
 /** @typedef {import("node:cluster").Worker} Worker */
 
