@@ -4,7 +4,7 @@ import { performance } from "node:perf_hooks";
 import { setTimeout as setTimeoutPromise } from "node:timers/promises";
 import { Int32Queue } from "../../lib/Int32Queue.js"
 import { Float64SortedQueue } from "../../lib/Float64SortedQueue.js";
-import { BasePrimaryLimiter, _kTriggerGrantFailureEvent, _kTriggerErrorEvent } from "./BasePrimaryLimiter.js";
+import { BasePrimaryLimiter, _kTriggerGrantFailureEvent } from "./BasePrimaryLimiter.js";
 import { IPC_SIGNATURE, IPC_OPCODES, IPC_INDEX } from "../shared/ipc-protocol.js";
 import { registerLimiterByUniqueNumber, unregisterLimiter } from "./registry/registerPrimaryLimiter.js";
 
@@ -61,14 +61,7 @@ export class PrimaryDurationLimiter extends BasePrimaryLimiter {
         this.#rateLimitDurationInMilliSeconds = (durationInSeconds * 1000) + 50 /* safety jitter buffer */;
         try {
             this.#grantTimestampSortedLog = new Float64SortedQueue(maxConcurrentRequests);
-            // Execute Proactive Primary-Workers Handshake
-            for (const workerId in cluster.workers) {
-                const worker = cluster.workers[workerId];
-                if (!worker) continue;
-                worker.send({apiProviderId, mode: "duration", apiUniqueNumber: this._apiUniqueNumber}, (err) => {
-                    if (err && !worker.isDead()) this[_kTriggerErrorEvent](err);
-                });
-            };
+            this._executeProactiveHandshake();
         } catch (err) {
             unregisterLimiter(apiProviderId, this._apiUniqueNumber)
             throw err

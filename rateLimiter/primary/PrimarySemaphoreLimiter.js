@@ -3,7 +3,7 @@ import cluster from "node:cluster";
 import { Int32Queue } from "../../lib/Int32Queue.js";
 import { registerLimiterByUniqueNumber } from "./registry/registerPrimaryLimiter.js";
 import { IPC_SIGNATURE, IPC_OPCODES , IPC_INDEX } from "../shared/ipc-protocol.js";
-import { _kTriggerGrantFailureEvent, _kTriggerErrorEvent, BasePrimaryLimiter } from "./BasePrimaryLimiter.js";
+import { _kTriggerGrantFailureEvent, BasePrimaryLimiter } from "./BasePrimaryLimiter.js";
 
 /**
     * @typedef {import("node:cluster").Worker} Worker
@@ -46,14 +46,7 @@ export class PrimarySemaphoreLimiter extends BasePrimaryLimiter {
         });
         // Assign Properties Values
         this.#remainingTokens = maxConcurrentRequests;
-        // Execute Proactive Primary-Workers Handshake
-        for (const workerId in cluster.workers) {
-            const worker = cluster.workers[workerId];
-            if (!worker) continue;
-            worker.send({apiProviderId, mode: "semaphore", apiUniqueNumber: this._apiUniqueNumber}, (err) => {
-                if (err && !worker.isDead()) this[_kTriggerErrorEvent](err);
-            });
-        };
+        this._executeProactiveHandshake();
     };
     /** 
         * Transmits the concurrency token grant to the target worker via IPC.

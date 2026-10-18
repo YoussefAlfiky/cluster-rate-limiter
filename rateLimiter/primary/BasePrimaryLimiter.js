@@ -1,4 +1,5 @@
 //@ts-check
+import cluster from "node:cluster";
 import { EventListenerRegistry } from "../events/EventListenerRegistry.js";
 import { triggerEvent, emitSafeError } from "../events/triggerEvent.js";
 import { validatePrimaryLimiter } from "./validators/validatePrimaryLimiter.js";
@@ -21,7 +22,6 @@ import { RateLimiterError } from "../errors/RateLimiterError.js";
     * without exposing the emission method to the public API.
 */
 export const _kTriggerGrantFailureEvent = Symbol("kTriggerGrantFailureEvent");
-export const _kTriggerErrorEvent = Symbol("kTriggerErrorEvent");
 
 /** 
     * Abstract base class for all primary-process cluster rate limiters.
@@ -54,6 +54,7 @@ export class BasePrimaryLimiter extends EventListenerRegistry {
         * @type {PrimaryListenerBuckets} 
     */
     #listenerBuckets;
+    #hasBroadcastedHandshake = false;
     /**
         * Abstract base constructor for primary-side rate limiters.
         * Validates configuration, initializes the event registry, and attaches the IPC cold-path router.
@@ -125,11 +126,24 @@ export class BasePrimaryLimiter extends EventListenerRegistry {
     };
     /**
         * @protected
-        * @param {*} err 
-        * @returns {void}
+        * Broadcasts the primary configuration and integer ID to all active workers.
+        * Idempotent: Subsequent calls are safely ignored to prevent IPC spam.
+        * MUST be called by subclasses ONLY AFTER all memory is safely allocated.
     */
-    [_kTriggerErrorEvent](err) {
-        emitSafeError(this.#listenerBuckets.error, err);
+    _executeProactiveHandshake() {
+        if (this.#hasBroadcastedHandshake) return;
+        this.#hasBroadcastedHandshake = true;
+        for (const workerId in cluster.workers) {
+            const worker = cluster.workers[workerId];
+            if (!worker) continue;
+            worker.send({
+                apiProviderId: this.#apiProviderId, 
+                mode: this.#mode, 
+                apiUniqueNumber: this.#apiUniqueNumber
+            }, (err) => {
+                if (err && !worker.isDead()) emitSafeError(this.#listenerBuckets.error, err);
+            });
+        };
     };
     /** 
         * Processes initial handshakes from newly booted workers. 
