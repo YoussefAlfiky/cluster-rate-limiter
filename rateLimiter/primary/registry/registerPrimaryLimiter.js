@@ -138,3 +138,45 @@ export function generateApiUniqueNumber() {
     }
     return globalObject[API_PROVIDERS_COUNTER_KEY];
 };
+
+
+/**
+    * Safely evicts a primary rate limiter from the global IPC routing registries.
+    * 
+    * **Architecture Note:**
+    * Used primarily as an internal transaction rollback mechanism. If a Limiter subclass 
+    * fails to allocate its memory (e.g., throwing a RangeError on massive queues) after 
+    * the base constructor has already registered it, this cleans up the global maps. 
+    * This prevents "ghost" limiters from permanently blocking the `apiProviderId` 
+    * or leaking memory in the hot-path router.
+    * 
+    * @param {string} apiProviderId The unique string identifier of the limiter.
+    * @param {number} apiUniqueNumber The fast-path integer ID assigned to the limiter.
+    * @throws {RateLimiterError} If arguments are malformed or registries are uninitialized.
+    * @returns {void}
+*/
+export function unregisterLimiter(apiProviderId, apiUniqueNumber) {
+    if (
+        typeof apiProviderId !== "string" || apiProviderId.trim() === ""
+        ||
+        !Number.isInteger(apiUniqueNumber) || apiUniqueNumber < 1
+    ) {
+        throw new RateLimiterError(
+            "ERR_INVALID_UNREGISTER_ARGS", 
+            "Failed to unregister primary limiter: 'apiProviderId' must be a non-empty string and 'apiUniqueNumber' must be a positive integer."
+        );
+    };
+    
+    const providerIdLimiterRegistry = globalObject[API_PROVIDERS_ID_REGISTRY_KEY];
+    const uniqueNumberLimiterRegistry = globalObject[API_PROVIDERS_UNIQUE_NUMBER_REGISTRY_KEY];
+    
+    if (!providerIdLimiterRegistry || !uniqueNumberLimiterRegistry) {
+        throw new RateLimiterError(
+            "ERR_REGISTRY_NOT_INITIALIZED",
+            "Failed to unregister primary limiter: The global IPC routing registries have not been initialized."
+        );
+    }
+    
+    providerIdLimiterRegistry.delete(apiProviderId);
+    uniqueNumberLimiterRegistry.delete(apiUniqueNumber);
+};

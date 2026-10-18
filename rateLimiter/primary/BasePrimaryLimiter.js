@@ -1,5 +1,4 @@
 //@ts-check
-import cluster from "node:cluster";
 import { EventListenerRegistry } from "../events/EventListenerRegistry.js";
 import { triggerEvent, emitSafeError } from "../events/triggerEvent.js";
 import { validatePrimaryLimiter } from "./validators/validatePrimaryLimiter.js";
@@ -22,6 +21,7 @@ import { RateLimiterError } from "../errors/RateLimiterError.js";
     * without exposing the emission method to the public API.
 */
 export const _kTriggerGrantFailureEvent = Symbol("kTriggerGrantFailureEvent");
+export const _kTriggerErrorEvent = Symbol("kTriggerErrorEvent");
 
 /** 
     * Abstract base class for all primary-process cluster rate limiters.
@@ -88,14 +88,6 @@ export class BasePrimaryLimiter extends EventListenerRegistry {
         this.#listenerBuckets = listenerBuckets;
         this.#apiProviderId = apiProviderId;
         this.#mode = mode;
-        // Execute Proactive Primary-Workers Handshake
-        for (const workerId in cluster.workers) {
-            const worker = cluster.workers[workerId];
-            if (!worker) continue;
-            worker.send({apiProviderId, mode, apiUniqueNumber: this.#apiUniqueNumber}, (err) => {
-                if (err && !worker.isDead()) emitSafeError(this.#listenerBuckets.error, err);
-            });
-        };
     };
     /** @returns {string} */
     get apiProviderId() {
@@ -130,6 +122,14 @@ export class BasePrimaryLimiter extends EventListenerRegistry {
         )) {
             emitSafeError(this.#listenerBuckets.error, err);
         };
+    };
+    /**
+        * @protected
+        * @param {*} err 
+        * @returns {void}
+    */
+    [_kTriggerErrorEvent](err) {
+        emitSafeError(this.#listenerBuckets.error, err);
     };
     /** 
         * Processes initial handshakes from newly booted workers. 
