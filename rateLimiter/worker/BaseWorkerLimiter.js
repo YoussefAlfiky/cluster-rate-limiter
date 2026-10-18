@@ -115,7 +115,7 @@ export class BaseWorkerLimiter {
         // Assign properties values 
         this.#mode = mode;
         this.#apiProviderId = apiProviderId;
-        this.#permitTimeoutDurationMs = permitTimeoutDurationInSeconds * 1000;
+        this.#permitTimeoutDurationMs = Math.min(permitTimeoutDurationInSeconds * 1000, 2_147_483_647);
         this.#releasePermitListenerBuckets = releasePermitListenerBuckets;
         // Register Limiter and initiate IPC listeners
         registerLimiterByProviderId(apiProviderId, {
