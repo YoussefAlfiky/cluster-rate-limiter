@@ -4,9 +4,8 @@ import { performance } from "node:perf_hooks";
 import { setTimeout as setTimeoutPromise } from "node:timers/promises";
 import { Int32Queue } from "../../lib/Int32Queue.js"
 import { Float64SortedQueue } from "../../lib/Float64SortedQueue.js";
-import { BasePrimaryLimiter, _kTriggerGrantFailureEvent } from "./BasePrimaryLimiter.js";
+import { BasePrimaryLimiter, _kTriggerGrantFailureEvent, _kPublish } from "./BasePrimaryLimiter.js";
 import { IPC_SIGNATURE, IPC_OPCODES, IPC_INDEX } from "../shared/ipc-protocol.js";
-import { registerLimiterByUniqueNumber, unregisterLimiter } from "./registry/primaryLimiterRegistry.js";
 
 /** @typedef {import("node:cluster").Worker} Worker */
 
@@ -51,21 +50,15 @@ export class PrimaryDurationLimiter extends BasePrimaryLimiter {
     */
     constructor(apiProviderId, maxConcurrentRequests, durationInSeconds) {
         super(apiProviderId, "duration", maxConcurrentRequests, durationInSeconds);
-        //  Register
-        registerLimiterByUniqueNumber(this._apiUniqueNumber, {
-            handleHotMessage: (worker, msg) => this.#handleHotMessage(worker, msg),
-            handleExit: () => this.#grantPendingRequests()
-        });
         // Assign Properties Values
         this.#maxConcurrentRequests = maxConcurrentRequests;
         this.#rateLimitDurationInMilliSeconds = (durationInSeconds * 1000) + 50 /* safety jitter buffer */;
-        try {
-            this.#grantTimestampSortedLog = new Float64SortedQueue(maxConcurrentRequests);
-            this._executeProactiveHandshake();
-        } catch (err) {
-            unregisterLimiter(apiProviderId, this._apiUniqueNumber)
-            throw err
-        }
+        this.#grantTimestampSortedLog = new Float64SortedQueue(maxConcurrentRequests);
+        // register
+        this[_kPublish]({
+            handleHotMessage: (worker, msg) => this.#handleHotMessage(worker, msg),
+            handleExit: () => this.#grantPendingRequests()
+        });
     };
     /**
         * Sweeps naturally expired timestamps from the log. 

@@ -3,7 +3,12 @@ import cluster from "node:cluster";
 import { EventListenerRegistry } from "../events/EventListenerRegistry.js";
 import { triggerEvent, emitSafeError } from "../events/triggerEvent.js";
 import { validatePrimaryLimiter } from "./validators/validatePrimaryLimiter.js";
-import { generateApiUniqueNumber, registerLimiterByProviderId } from "./registry/primaryLimiterRegistry.js";
+import { 
+    generateApiUniqueNumber, 
+    registerLimiterByProviderId, 
+    registerLimiterByUniqueNumber, 
+    unregisterLimiter 
+} from "./registry/primaryLimiterRegistry.js";
 import { RateLimiterError } from "../errors/RateLimiterError.js";
 
 /**
@@ -22,6 +27,10 @@ import { RateLimiterError } from "../errors/RateLimiterError.js";
     * without exposing the emission method to the public API.
 */
 export const _kTriggerGrantFailureEvent = Symbol("kTriggerGrantFailureEvent");
+/**
+    * Protected symbol used to access the internal publication lifecycle method.
+*/
+export const _kPublish = Symbol("kPublish");
 
 /** 
     * Abstract base class for all primary-process cluster rate limiters.
@@ -54,6 +63,16 @@ export class BasePrimaryLimiter extends EventListenerRegistry {
         * @type {PrimaryListenerBuckets} 
     */
     #listenerBuckets;
+    /**
+        * @readonly
+        * @type {number}
+    */
+    #maxConcurrentRequests = 0;
+    /**
+        * @readonly
+        * @type {number | null}
+    */
+    #durationInSeconds;
     #hasBroadcastedHandshake = false;
     /**
         * Abstract base constructor for primary-side rate limiters.
@@ -79,16 +98,12 @@ export class BasePrimaryLimiter extends EventListenerRegistry {
             error: { on: new Set(), once: new Set() }
         };
         super(listenerBuckets);
-        //
-        registerLimiterByProviderId(apiProviderId, {
-            limiter: this,
-            config: `${maxConcurrentRequests}-${mode}-${durationInSeconds}`,
-            handleColdMessage: (worker, msg) => this.#handleColdMessage(worker, msg)
-        });
         // Assign Property values
         this.#listenerBuckets = listenerBuckets;
         this.#apiProviderId = apiProviderId;
         this.#mode = mode;
+        this.#maxConcurrentRequests = maxConcurrentRequests;
+        this.#durationInSeconds = durationInSeconds;
     };
     /** @returns {string} */
     get apiProviderId() {
@@ -125,12 +140,44 @@ export class BasePrimaryLimiter extends EventListenerRegistry {
         };
     };
     /**
-        * @protected
+        * Atomically registers the limiter into the global IPC routing maps and 
+        * broadcasts the initial boot configuration to all active cluster workers.
+        * 
+        * **CRITICAL ARCHITECTURE RULE:** 
+        * This method MUST be called as the absolute **last statement** in every subclass constructor.
+        * If placed earlier and a subsequent constructor statement throws an error, a broken, 
+        * partially-constructed instance will leak into the global IPC maps and cause fatal crashes 
+        * when messages are routed to it.
+        * 
+        * **Transaction Safety:** 
+        * This method executes as a strict transaction. If map registration or the IPC handshake 
+        * fails synchronously, it instantly rolls back all state to prevent memory leaks and "ghost" limiters.
+        * 
+        * @protected 
+        * @param {Object} hotEntry
+        * @param {(worker: Worker, msg: number[]) => void} hotEntry.handleHotMessage Handler for incoming hot-path IPC arrays.
+        * @param {(workerId: number) => void} hotEntry.handleExit Handler for worker crash recovery.
+        * @throws {unknown} Re-throws any synchronous error encountered during the transaction.
+    */
+    [_kPublish](hotEntry) {   // last statement of EVERY subclass constructor
+        try {
+            registerLimiterByProviderId(this.#apiProviderId, {
+                limiter: this,
+                config: `${this.#maxConcurrentRequests}-${this.#mode}-${this.#durationInSeconds}`,
+                handleColdMessage: (worker, msg) => this.#handleColdMessage(worker, msg)
+            });
+            registerLimiterByUniqueNumber(this.#apiUniqueNumber, hotEntry);
+            this.#executeProactiveHandshake();
+        } catch (err) {
+            unregisterLimiter(this.#apiProviderId, this.#apiUniqueNumber);
+            throw err;
+        }
+    }
+    /**
         * Broadcasts the primary configuration and integer ID to all active workers.
         * Idempotent: Subsequent calls are safely ignored to prevent IPC spam.
-        * MUST be called by subclasses ONLY AFTER all memory is safely allocated.
     */
-    _executeProactiveHandshake() {
+    #executeProactiveHandshake() {
         if (this.#hasBroadcastedHandshake) return;
         this.#hasBroadcastedHandshake = true;
         for (const workerId in cluster.workers) {

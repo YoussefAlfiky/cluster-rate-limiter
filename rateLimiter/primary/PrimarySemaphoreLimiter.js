@@ -1,9 +1,8 @@
 //@ts-check
 import cluster from "node:cluster";
 import { Int32Queue } from "../../lib/Int32Queue.js";
-import { registerLimiterByUniqueNumber } from "./registry/primaryLimiterRegistry.js";
 import { IPC_SIGNATURE, IPC_OPCODES , IPC_INDEX } from "../shared/ipc-protocol.js";
-import { _kTriggerGrantFailureEvent, BasePrimaryLimiter } from "./BasePrimaryLimiter.js";
+import { _kPublish, _kTriggerGrantFailureEvent, BasePrimaryLimiter } from "./BasePrimaryLimiter.js";
 
 /**
     * @typedef {import("node:cluster").Worker} Worker
@@ -40,13 +39,13 @@ export class PrimarySemaphoreLimiter extends BasePrimaryLimiter {
     */
     constructor(apiProviderId, maxConcurrentRequests) {
         super(apiProviderId, "semaphore", maxConcurrentRequests, null);
-        registerLimiterByUniqueNumber(this._apiUniqueNumber, {
+        // Assign Properties Values
+        this.#remainingTokens = maxConcurrentRequests;
+        // register
+        this[_kPublish]({
             handleHotMessage: (worker, msg) => this.#handleHotMessage(worker, msg),
             handleExit: (workerId) => this.#handleWorkerExit(workerId)
         });
-        // Assign Properties Values
-        this.#remainingTokens = maxConcurrentRequests;
-        this._executeProactiveHandshake();
     };
     /** 
         * Transmits the concurrency token grant to the target worker via IPC.
