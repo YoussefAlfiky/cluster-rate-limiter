@@ -159,18 +159,47 @@ export class BasePrimaryLimiter extends EventListenerRegistry {
         * @throws {unknown} Re-throws any synchronous error encountered during the transaction.
     */
     [_kPublish](hotEntry) {   // last statement of EVERY subclass constructor
+        registerLimiterByProviderId(this.#apiProviderId, {
+            limiter: this,
+            config: `${this.#maxConcurrentRequests}-${this.#mode}-${this.#durationInSeconds}`,
+            handleColdMessage: (worker, msg) => this.#handleColdMessage(worker, msg)
+        });
         try {
-            registerLimiterByProviderId(this.#apiProviderId, {
-                limiter: this,
-                config: `${this.#maxConcurrentRequests}-${this.#mode}-${this.#durationInSeconds}`,
-                handleColdMessage: (worker, msg) => this.#handleColdMessage(worker, msg)
-            });
             registerLimiterByUniqueNumber(this.#apiUniqueNumber, hotEntry);
             this.#executeProactiveHandshake();
         } catch (err) {
             unregisterLimiter(this.#apiProviderId, this.#apiUniqueNumber);
             throw err;
         }
+    }
+    /** @param {Worker} worker */
+    #sendHandshake(worker) {
+        try {
+            worker.send({
+                apiProviderId: this.#apiProviderId,
+                mode: this.#mode,
+                apiUniqueNumber: this.#apiUniqueNumber
+            }, (err) => {
+                if (err && !worker.isDead()) emitSafeError(this.#listenerBuckets.error, err);
+            });
+        } catch (syncErr) {
+            if (worker.isDead()) return;
+            try {
+                const normalizedError = syncErr instanceof Error ? syncErr : new Error(String(syncErr));
+                const handshakeError = new RateLimiterError(
+                    "ERR_HANDSHAKE_FAILED",
+                    `Failed to send boot configuration to worker ${worker.id}. The worker likely disconnected or crashed. Details: ${normalizedError.message}`
+                );
+                handshakeError.cause = normalizedError;
+                emitSafeError(this.#listenerBuckets.error, handshakeError);
+            } catch {
+                process.emitWarning(
+                    `Failed to route handshake error for worker ${worker.id}. The error object may be corrupted.`,
+                    "RateLimiterWarning",
+                    "A critical exception was swallowed during worker cold-path registration."
+                );
+            }
+        };
     }
     /**
         * Broadcasts the primary configuration and integer ID to all active workers.
@@ -179,13 +208,7 @@ export class BasePrimaryLimiter extends EventListenerRegistry {
         for (const workerId in cluster.workers) {
             const worker = cluster.workers[workerId];
             if (!worker) continue;
-            worker.send({
-                apiProviderId: this.#apiProviderId, 
-                mode: this.#mode, 
-                apiUniqueNumber: this.#apiUniqueNumber
-            }, (err) => {
-                if (err && !worker.isDead()) emitSafeError(this.#listenerBuckets.error, err);
-            });
+            this.#sendHandshake(worker);
         };
     };
     /** 
@@ -198,32 +221,7 @@ export class BasePrimaryLimiter extends EventListenerRegistry {
     */
     #handleColdMessage(worker, msg) {
         if ('acknowledgePrimary' in msg && msg.acknowledgePrimary === "pending") {
-            try {
-                worker.send({
-                    apiProviderId: this.#apiProviderId, 
-                    mode: this.#mode, 
-                    apiUniqueNumber: this.#apiUniqueNumber
-                }, (err) => {
-                    if (err && !worker.isDead()) emitSafeError(this.#listenerBuckets.error, err);
-                });
-            } catch (syncErr) {
-                if (worker.isDead()) return; 
-                try {
-                    const normalizedError = syncErr instanceof Error ? syncErr : new Error(String(syncErr));
-                    const handshakeError = new RateLimiterError(
-                        "ERR_HANDSHAKE_FAILED",
-                        `Failed to send boot configuration to worker ${worker.id}. The worker likely disconnected or crashed. Details: ${normalizedError.message}`
-                    );
-                    handshakeError.cause = normalizedError;
-                    emitSafeError(this.#listenerBuckets.error, handshakeError);
-                } catch {
-                    process.emitWarning(
-                        `Failed to route handshake error for worker ${worker.id}. The error object may be corrupted.`,
-                        "RateLimiterWarning",
-                        "A critical exception was swallowed during worker cold-path registration."
-                    );
-                }
-            };
+            this.#sendHandshake(worker);
         };
     };
 };
