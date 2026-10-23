@@ -73,7 +73,6 @@ export class BasePrimaryLimiter extends EventListenerRegistry {
         * @type {number | null}
     */
     #durationInSeconds;
-    #hasBroadcastedHandshake = false;
     /**
         * Abstract base constructor for primary-side rate limiters.
         * Validates configuration, initializes the event registry, and attaches the IPC cold-path router.
@@ -175,11 +174,8 @@ export class BasePrimaryLimiter extends EventListenerRegistry {
     }
     /**
         * Broadcasts the primary configuration and integer ID to all active workers.
-        * Idempotent: Subsequent calls are safely ignored to prevent IPC spam.
     */
     #executeProactiveHandshake() {
-        if (this.#hasBroadcastedHandshake) return;
-        this.#hasBroadcastedHandshake = true;
         for (const workerId in cluster.workers) {
             const worker = cluster.workers[workerId];
             if (!worker) continue;
