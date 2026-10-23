@@ -170,13 +170,6 @@ export function unregisterLimiter(apiProviderId, apiUniqueNumber) {
     const providerIdLimiterRegistry = globalObject[API_PROVIDERS_ID_REGISTRY_KEY];
     const uniqueNumberLimiterRegistry = globalObject[API_PROVIDERS_UNIQUE_NUMBER_REGISTRY_KEY];
     
-    if (!providerIdLimiterRegistry || !uniqueNumberLimiterRegistry) {
-        throw new RateLimiterError(
-            "ERR_REGISTRY_NOT_INITIALIZED",
-            "Failed to unregister primary limiter: The global IPC routing registries have not been initialized."
-        );
-    }
-    
-    providerIdLimiterRegistry.delete(apiProviderId);
-    uniqueNumberLimiterRegistry.delete(apiUniqueNumber);
+    providerIdLimiterRegistry?.delete(apiProviderId);
+    uniqueNumberLimiterRegistry?.delete(apiUniqueNumber);
 };
