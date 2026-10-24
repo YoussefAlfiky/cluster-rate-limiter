@@ -10,7 +10,7 @@ A zero-dependency rate limiter for Node.js apps running in [`cluster`](https://n
 - [Choosing a mode](#choosing-a-mode)
 - [API reference](#api-reference)
 - [Warnings and constraints](#warnings-and-constraints)
-- [Performance](#performance)
+- [Performance & Architecture](#performance--architecture)
 - [Fault Tolerance & Crash Recovery](#fault-tolerance--crash-recovery)
 - [Design trade-offs](#design-trade-offs)
 - [License](#license)
@@ -83,7 +83,7 @@ async function chargeCustomer(customerId, amountCents) {
 }
 ```
 
-`run()` acquires a permit, invokes your function with whatever arguments you pass it, and releases the permit once it settles (or, in duration mode, once the request has actually been dispatched — see [Performance](#performance)). Whatever your function returns or throws is exactly what `run()` resolves or rejects with.
+`run()` acquires a permit, invokes your function with whatever arguments you pass it, and releases the permit once it settles (or, in duration mode, once the request has actually been dispatched — see [Performance & Architecture](#performance--architecture)). Whatever your function returns or throws is exactly what `run()` resolves or rejects with.
 
 ### Handling errors
 
@@ -120,14 +120,43 @@ If the thing you're protecting has a hard concurrency ceiling (a connection pool
 Call once, in the primary process, before forking workers (or any time after — workers that were forked earlier are found and reached automatically).
 
 ```typescript
-type PrimaryConfig =
-  | { apiProviderId: string; maxConcurrentRequests: number; mode: "semaphore" }
-  | { apiProviderId: string; maxConcurrentRequests: number; mode: "duration"; durationInSeconds: number };
+type PrimarySemaphoreConfig = {
+  apiProviderId: string;
+  maxConcurrentRequests: number;
+  mode: "semaphore";
+};
 
-function createPrimaryClusterRateLimiter(config: PrimaryConfig): PrimaryRateLimiter_ClustersMode;
+type PrimaryDurationConfig = {
+  apiProviderId: string;
+  maxConcurrentRequests: number;
+  mode: "duration";
+  durationInSeconds: number; // Required for duration mode
+};
+
+function createPrimaryClusterRateLimiter(config: PrimarySemaphoreConfig): PrimarySemaphoreLimiter;
+function createPrimaryClusterRateLimiter(config: PrimaryDurationConfig): PrimaryDurationLimiter;
 ```
 
 Calling this again with the **same** `apiProviderId` and the **same** configuration is safe and idempotent — you get back the existing instance. Calling it again with the same `apiProviderId` but **different** settings throws `ERR_CONFLICTING_LIMITER_CONFIG` rather than silently keeping whichever configuration registered first.
+
+### Primary Limiters: `PrimaryDurationLimiter` & `PrimarySemaphoreLimiter`
+
+Primary limiters operate as the central orchestration engine for the cluster. They manage shared memory state, calculate token distribution in real-time, and route IPC capacity grants, acting as high-speed traffic controllers while leaving the execution of actual business logic to the worker processes. They expose properties for inspection and an event emitter interface to handle background IPC anomalies.
+
+**Properties**
+* `apiProviderId: string` (Readonly)
+* `mode: "duration" | "semaphore"` (Readonly)
+
+**Event Methods**
+* `on(event, listener)` / `once(event, listener)`
+* `off(event, listener)` / `clearListeners()`
+
+**Events**
+* `"grantPermitFailure": (workerId: number, apiProviderId: string, requestId: number, err: unknown) => void`
+  Emitted when the primary process fails to transmit a capacity grant to a worker (e.g., worker died mid-flight). The primary safely refunds the slot internally.
+* `"error": (err: unknown) => void`
+  Emitted for critical but non-fatal background errors (e.g., handshake failures).
+
 
 ### `createWorkerClusterRateLimiter(config)`
 
@@ -136,20 +165,45 @@ Creates or retrieves a worker-side limiter for a specific `apiProviderId`.
 Because this factory is **idempotent**, you do not need to pass the limiter instance around your app. You can safely call this function wherever you need it (e.g., across different route files). As long as the `apiProviderId` and configuration match, it will return the exact same shared instance for that worker.
 
 ```typescript
-type WorkerConfig = {
+type WorkerSemaphoreConfig = {
   apiProviderId: string;
-  mode: "semaphore" | "duration"; // must match the primary's mode
+  mode: "semaphore"; // Must match the primary's mode
   permitTimeoutDurationInSeconds: number;
 };
 
-function createWorkerClusterRateLimiter(config: WorkerConfig): WorkerRateLimiter_ClustersMode;
+type WorkerDurationConfig = {
+  apiProviderId: string;
+  mode: "duration"; // Must match the primary's mode
+  permitTimeoutDurationInSeconds: number;
+};
+
+function createWorkerClusterRateLimiter(config: WorkerSemaphoreConfig): WorkerSemaphoreLimiter;
+function createWorkerClusterRateLimiter(config: WorkerDurationConfig): WorkerDurationLimiter;
 ```
 
-Returns an object with one method:
+### Worker Limiters: `WorkerDurationLimiter` & `WorkerSemaphoreLimiter`
 
-```typescript
-run<T, A extends unknown[]>(caller: (...args: A) => T | Promise<T>, ...args: A): Promise<T>;
-```
+Worker limiters are the application-facing interfaces used to wrap and execute your actual business logic.
+
+**Common API (Both Modes)**
+* `apiProviderId: string` (Readonly)
+* `mode: "duration" | "semaphore"` (Readonly)
+* `ready(): Promise<boolean>`
+  Manually awaits or triggers the IPC connection handshake with the primary process.
+* `run<T, A extends unknown[]>(caller: (...args: A) => T | Promise<T>, ...args: A): Promise<T>`
+  Automatically acquires a permit, executes the `caller` function, and returns its result.
+
+**`WorkerSemaphoreLimiter` Only**
+
+Because semaphore mode explicitly releases concurrency tokens when a task finishes, this class implements an event emitter to trap background release transmission failures.
+
+**Event Methods**
+* `on(event, listener)` / `once(event, listener)`
+* `off(event, listener)` / `clearListeners()`
+
+**Worker Events**
+* `"releasePermitFailure": (apiProviderId: string, requestId: number, err: unknown) => void`
+* `"error": (err: unknown) => void`
 
 ### `RateLimiterError`
 
@@ -161,18 +215,21 @@ class RateLimiterError extends Error {
 
 | Code | Raised when |
 |---|---|
-| `ERR_NOT_PRIMARY` | A primary limiter was constructed from a worker process |
-| `ERR_NOT_WORKER` | A worker limiter was constructed outside of a cluster worker (e.g., in the primary process or a standalone script) |
-| `ERR_INVALID_API_PROVIDER_ID` | `apiProviderId` isn't a string |
-| `ERR_INVALID_MAX_CONCURRENT_REQUESTS` | `maxConcurrentRequests` isn't a positive integer |
-| `ERR_INVALID_MODE` | `mode` isn't `"semaphore"` or `"duration"` |
-| `ERR_INVALID_DURATION` | `mode: "duration"` without a valid, positive `durationInSeconds` |
-| `ERR_INVALID_TIMEOUT_DURATION` | `permitTimeoutDurationInSeconds` isn't a positive finite number |
-| `ERR_DUPLICATE_PRIMARY_LIMITER` / `ERR_DUPLICATE_WORKER_LIMITER` | Internal — surfaced as `ERR_CONFLICTING_LIMITER_CONFIG` by the factories when settings genuinely differ; otherwise handled silently |
-| `ERR_CONFLICTING_LIMITER_CONFIG` | Same `apiProviderId` constructed twice with different settings |
-| `ERR_MODE_MISMATCH` | A worker's `mode` doesn't match the primary's for this `apiProviderId` |
-| `ERR_PRIMARY_ACK_TIMEOUT` | The primary never confirmed the worker's handshake |
-| `ERR_PERMIT_TIMEOUT` | `run()` waited longer than `permitTimeoutDurationInSeconds` for a permit |
+| `ERR_NOT_PRIMARY` | A primary limiter was constructed from a worker process. |
+| `ERR_NOT_WORKER` | A worker limiter was constructed outside of a cluster worker (e.g., in the primary process or a standalone script). |
+| `ERR_INVALID_API_PROVIDER_ID` | `apiProviderId` is not a valid string. |
+| `ERR_INVALID_MAX_CONCURRENT_REQUESTS` | `maxConcurrentRequests` is not a positive integer. |
+| `ERR_INVALID_MODE` | `mode` is not `"semaphore"` or `"duration"`. |
+| `ERR_INVALID_DURATION` | `mode: "duration"` is configured without a valid, positive `durationInSeconds`. |
+| `ERR_INVALID_TIMEOUT_DURATION` | `permitTimeoutDurationInSeconds` is not a positive finite number. |
+| `ERR_INVALID_EVENT` / `ERR_INVALID_EVENT_TYPE` | An unrecognized event string was passed to `.on()`, `.once()`, or `.off()`. |
+| `ERR_DUPLICATE_PRIMARY_LIMITER` / `ERR_DUPLICATE_WORKER_LIMITER` | Internal — surfaced as `ERR_CONFLICTING_LIMITER_CONFIG` by the factories when settings genuinely differ; otherwise handled silently. |
+| `ERR_CONFLICTING_LIMITER_CONFIG` | The same `apiProviderId` was constructed twice with different settings in the same process. |
+| `ERR_MODE_MISMATCH` | A worker's `mode` does not match the primary's initialized mode for this `apiProviderId`. |
+| `ERR_HANDSHAKE_FAILED` | The primary process failed to send the initial boot configuration back to a worker. |
+| `ERR_IPC_CHANNEL_CLOSED` | A worker attempted to acquire/release a permit, or complete a handshake, but its IPC channel to the primary process was closed or disconnected. |
+| `ERR_PRIMARY_ACK_TIMEOUT` | The primary process never confirmed the worker's initial handshake. |
+| `ERR_PERMIT_TIMEOUT` | `.run()` waited longer than `permitTimeoutDurationInSeconds` for capacity. |
 
 ## Warnings and constraints
 
@@ -182,19 +239,25 @@ class RateLimiterError extends Error {
 - **Don't block the event loop inside `run()`.** This depends on fast, timely IPC in both directions. A CPU-bound synchronous function passed as `caller` freezes the event loop, delays every other permit request and release on that worker, and causes real rate-limit drift. Offload heavy synchronous work to `node:worker_threads`; only the coordination needs to happen on the main thread.
 - **Construct the primary limiter once per `apiProviderId`, and share it.** The factory is idempotent for matching configuration, so accidentally calling it more than once with the same settings is harmless. Calling it with conflicting settings is treated as the misconfiguration it almost certainly is, not silently resolved by picking one.
 
-## Performance
+## Performance & Architecture
 
-- **Zero-allocation window tracking.** The duration-mode grant log is a fixed-capacity `Float64Array` ring buffer, not a linked list or array of boxed objects — enqueue, dequeue, and prune are `O(1)` / `O(log n)` operations over raw memory, completely avoiding garbage collection pauses on the core data structure.
-- **One IPC hop, not a network round trip.** Coordination goes over the pipe `cluster` already sets up between primary and worker — no TCP overhead, no separate service, no network stack. It relies entirely on Node's native IPC instead of talking to external infrastructure, making it the fastest a cross-process rate limiter can plausibly be on one machine.
-- **Duration mode sends fewer messages than you'd expect.** Because capacity is governed entirely by *when* a grant was issued, not by explicit confirmation, a duration-mode worker never sends a release message at all — half the IPC traffic of the equivalent semaphore-mode call.
+Engineered for bare-metal Node.js speed. This library relies on strict V8 optimizations and lock-free concurrency models to ensure the limiter never bottlenecks your throughput.
 
-In practice, none of this bookkeeping is what limits your throughput — the external API call you're gating almost always costs orders of magnitude more time than the permit round trip. The point of the design above isn't to make the limiter fast in isolation; it's to make sure the limiter is never the reason your throughput is lower than it should be.
+- **Zero-allocation window tracking (O(1)).** The sliding time-window log is powered by a fixed-capacity `Float64Array` ring buffer. Enqueue and prune operations execute strictly over raw memory, completely eliminating Garbage Collection (GC) spikes.
+- **Zero-allocation request queues (O(1)).** Incoming requests waiting for capacity are tracked via flat `Int32Array` ring buffers. Routing pending cluster and request IDs requires zero new object allocations.
+- **V8 SMI IPC payloads.** Hot-path messages use fixed-length arrays of Small Integers (SMIs) rather than JSON objects, drastically reducing V8 serialization/deserialization overhead.
+- **O(1) fast-path routing.** Bypasses string hashing by upgrading established worker connections to instant integer-based `Map` lookups.
+- **O(1) event loop footprint.** Uses a global `Symbol.for` registry to ensure exactly *one* `process.on('message')` listener is attached per process, regardless of how many limiters you instantiate. No `MaxListenersExceededWarning` or O(N) degradation.
+- **One IPC hop, zero network overhead.** Coordination travels exclusively over `node:cluster`'s native libuv pipes. No TCP, no Redis, no network round-trips.
+- **50% less IPC traffic in duration mode.** Time-based capacity requires no explicit release signals from the worker, halving the coordination overhead compared to semaphore mode.
+
+> **The Philosophy:** The external API call you are gating will almost always cost orders of magnitude more time than the permit round-trip. The goal of this architecture is to guarantee that the limiter's internal bookkeeping is *never* the reason your throughput degrades under heavy load.
 
 ## Fault Tolerance & Crash Recovery
 
 A worker that dies mid-request is detected via `cluster`'s own `'exit'` event, ensuring system stability without relying on arbitrary TTL timeouts:
-- *Semaphore mode (Instant release):* Active capacity is instantly freed the moment the OS reaps the process, ensuring your throughput doesn't bottleneck waiting for a timeout.
-- *Duration mode (State-preserving):* Crash events do not erase historical grants. Sent requests remain accurately counted until they naturally expire, guaranteeing zero rate-limit violations during worker restarts.
+- **Semaphore mode (Instant release):** Active capacity is instantly freed the moment the OS reaps the process, ensuring your throughput doesn't bottleneck waiting for a timeout.
+- **Duration mode (State-preserving):** Crash events do not erase historical grants. Sent requests remain accurately counted until they naturally expire, guaranteeing zero rate-limit violations during worker restarts.
 
 ## Design trade-offs
 
