@@ -186,7 +186,9 @@ export class BasePrimaryLimiter extends EventListenerRegistry {
         } catch (syncErr) {
             if (worker.isDead()) return;
             try {
+                /**@type {Error & { code?: string }}*/
                 const normalizedError = syncErr instanceof Error ? syncErr : new Error(String(syncErr));
+                if (normalizedError.code === 'EPIPE' || normalizedError.code === 'ERR_IPC_CHANNEL_CLOSED') return;
                 const handshakeError = new RateLimiterError(
                     "ERR_HANDSHAKE_FAILED",
                     `Failed to send boot configuration to worker ${worker.id}. The worker likely disconnected or crashed. Details: ${normalizedError.message}`
