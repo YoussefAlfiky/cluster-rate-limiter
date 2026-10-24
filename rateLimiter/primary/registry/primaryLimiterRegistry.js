@@ -152,7 +152,7 @@ export function generateApiUniqueNumber() {
     * 
     * @param {string} apiProviderId The unique string identifier of the limiter.
     * @param {number} apiUniqueNumber The fast-path integer ID assigned to the limiter.
-    * @throws {RateLimiterError} If arguments are malformed or registries are uninitialized.
+    * @throws {RateLimiterError} If arguments are malformed.
     * @returns {void}
 */
 export function unregisterLimiter(apiProviderId, apiUniqueNumber) {
