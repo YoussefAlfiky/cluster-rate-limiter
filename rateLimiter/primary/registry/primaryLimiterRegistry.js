@@ -141,19 +141,15 @@ export function generateApiUniqueNumber() {
 
 
 /**
-    * Safely evicts a primary rate limiter from the global IPC routing registries.
+    * Removes a primary limiter from both the Provider ID and Unique Number IPC routing registries.
     * 
-    * **Architecture Note:**
-    * Used primarily as an internal transaction rollback mechanism. If a Limiter subclass 
-    * fails to allocate its memory (e.g., throwing a RangeError on massive queues) after 
-    * the base constructor has already registered it, this cleans up the global maps. 
-    * This prevents "ghost" limiters from permanently blocking the `apiProviderId` 
-    * or leaking memory in the hot-path router.
+    * **Rollback Safety:**
+    * Used internally by the primary limiter base class as an emergency rollback mechanism 
+    * if the hot-path (`uniqueNumber`) registration fails during the `[_kPublish]` transaction.
     * 
-    * @param {string} apiProviderId The unique string identifier of the limiter.
-    * @param {number} apiUniqueNumber The fast-path integer ID assigned to the limiter.
+    * @param {string} apiProviderId 
+    * @param {number} apiUniqueNumber 
     * @throws {RateLimiterError} If arguments are malformed.
-    * @returns {void}
 */
 export function unregisterLimiter(apiProviderId, apiUniqueNumber) {
     if (
