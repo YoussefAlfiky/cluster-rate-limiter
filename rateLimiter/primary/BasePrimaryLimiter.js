@@ -191,7 +191,7 @@ export class BasePrimaryLimiter extends EventListenerRegistry {
                     `Failed to send boot configuration to worker ${worker.id}. The worker likely disconnected or crashed. Details: ${normalizedError.message}`
                 );
                 handshakeError.cause = normalizedError;
-                emitSafeError(this.#listenerBuckets.error, handshakeError);
+                process.nextTick(() => emitSafeError(this.#listenerBuckets.error, handshakeError));
             } catch {
                 process.emitWarning(
                     `Failed to route handshake error for worker ${worker.id}. The error object may be corrupted.`,
