@@ -99,6 +99,24 @@ export interface WorkerDurationLimiter extends BaseWorkerLimiter {
 
 export interface WorkerSemaphoreLimiter extends BaseWorkerLimiter {
     readonly mode: "semaphore";
+
+    /** Subscribes to an event continuously. */
+    on(event: "error", listener: (err: Error | unknown) => void | Promise<void>): void;
+    on(event: "grantPermitFailure", listener: (apiProviderId: string, requestId: number, err: unknown) => void | Promise<void>): void;
+
+    /** Subscribes to an event for a single trigger. */
+    once(event: "error", listener: (err: Error | unknown) => void | Promise<void>): void;
+    once(event: "grantPermitFailure", listener: (apiProviderId: string, requestId: number, err: unknown) => void | Promise<void>): void;
+
+    /** Removes a specific active event listener. */
+    off(event: "error", listener: (err: Error | unknown) => void | Promise<void>): void;
+    off(event: "grantPermitFailure", listener: (apiProviderId: string, requestId: number, err: unknown) => void | Promise<void>): void;
+
+    /** 
+     * Clears all registered event listeners.
+     * Essential for cleanup during graceful shutdowns or test teardowns.
+     */
+    clearListeners(): void;
 }
 
 
