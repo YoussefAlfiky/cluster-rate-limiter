@@ -75,14 +75,14 @@ export class BasePrimaryLimiter extends EventListenerRegistry {
     #durationInSeconds;
     /**
         * Abstract base constructor for primary-side rate limiters.
-        * Validates configuration, initializes the event registry, and attaches the IPC cold-path router.
+        * Validates configuration and initializes the event registry.
         *
         * @param {string} apiProviderId Unique identifier for the target API (e.g., 'stripe-api').
         * @param {"semaphore" | "duration"} mode The rate-limiting strategy to enforce.
         * @param {number} maxConcurrentRequests Maximum number of permits or active tokens allowed.
         * @param {number | null} durationInSeconds Sliding window duration in seconds (must be `null` for semaphore mode).
         * @throws {Error} If instantiated directly (class is abstract).
-        * @throws {RateLimiterError} If arguments are invalid or the provider ID is already registered.
+        * @throws {RateLimiterError} If configuration arguments are invalid.
     */
     constructor(apiProviderId, mode, maxConcurrentRequests, durationInSeconds) {
         // constructor's input validation
