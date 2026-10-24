@@ -139,7 +139,7 @@ export class BasePrimaryLimiter extends EventListenerRegistry {
         };
     };
     /**
-        * Atomically registers the limiter into the global IPC routing maps and 
+        * Registers the limiter into the global IPC routing maps and 
         * broadcasts the initial boot configuration to all active cluster workers.
         * 
         * **CRITICAL ARCHITECTURE RULE:** 
@@ -148,15 +148,16 @@ export class BasePrimaryLimiter extends EventListenerRegistry {
         * partially-constructed instance will leak into the global IPC maps and cause fatal crashes 
         * when messages are routed to it.
         * 
-        * **Transaction Safety:** 
-        * This method executes as a strict transaction. If map registration or the IPC handshake 
-        * fails synchronously, it instantly rolls back all state to prevent memory leaks and "ghost" limiters.
+        * **Rollback Safety:** 
+        * Provider ID registration occurs first; if it collides, it fails fast and safely aborts.
+        * If the subsequent Unique Number registration fails, the method catches the error and 
+        * safely rolls back the Provider ID registration. 
         * 
         * @protected 
         * @param {Object} hotEntry
         * @param {(worker: Worker, msg: number[]) => void} hotEntry.handleHotMessage Handler for incoming hot-path IPC arrays.
         * @param {(workerId: number) => void} hotEntry.handleExit Handler for worker crash recovery.
-        * @throws {unknown} Re-throws any synchronous error encountered during the transaction.
+        * @throws {unknown} Re-throws any synchronous map registration errors.
     */
     [_kPublish](hotEntry) {   // last statement of EVERY subclass constructor
         registerLimiterByProviderId(this.#apiProviderId, {
