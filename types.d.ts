@@ -50,16 +50,16 @@ interface BasePrimaryLimiter {
     readonly apiProviderId: string;
 
     /** Subscribes to an event continuously. */
-    on(event: "error", listener: (err: Error | unknown) => void | Promise<void>): void;
-    on(event: "grantPermitFailure", listener: (workerId: number, apiProviderId: string, requestId: number, err: Error | unknown) => void | Promise<void>): void;
+    on(event: "error", listener: (err: unknown) => void | Promise<void>): void;
+    on(event: "grantPermitFailure", listener: (workerId: number, apiProviderId: string, requestId: number, err: unknown) => void | Promise<void>): void;
 
     /** Subscribes to an event for a single trigger. */
-    once(event: "error", listener: (err: Error | unknown) => void | Promise<void>): void;
-    once(event: "grantPermitFailure", listener: (workerId: number, apiProviderId: string, requestId: number, err: Error | unknown) => void | Promise<void>): void;
+    once(event: "error", listener: (err: unknown) => void | Promise<void>): void;
+    once(event: "grantPermitFailure", listener: (workerId: number, apiProviderId: string, requestId: number, err: unknown) => void | Promise<void>): void;
 
     /** Removes a specific active event listener. */
-    off(event: "error", listener: (err: Error | unknown) => void | Promise<void>): void;
-    off(event: "grantPermitFailure", listener: (workerId: number, apiProviderId: string, requestId: number, err: Error | unknown) => void | Promise<void>): void;
+    off(event: "error", listener: (err: unknown) => void | Promise<void>): void;
+    off(event: "grantPermitFailure", listener: (workerId: number, apiProviderId: string, requestId: number, err: unknown) => void | Promise<void>): void;
 
     /** 
      * Clears all registered event listeners.
@@ -101,16 +101,16 @@ export interface WorkerSemaphoreLimiter extends BaseWorkerLimiter {
     readonly mode: "semaphore";
 
     /** Subscribes to an event continuously. */
-    on(event: "error", listener: (err: Error | unknown) => void | Promise<void>): void;
-    on(event: "grantPermitFailure", listener: (apiProviderId: string, requestId: number, err: unknown) => void | Promise<void>): void;
+    on(event: "error", listener: (err: unknown) => void | Promise<void>): void;
+    on(event: "releasePermitFailure", listener: (apiProviderId: string, requestId: number, err: unknown) => void | Promise<void>): void;
 
     /** Subscribes to an event for a single trigger. */
-    once(event: "error", listener: (err: Error | unknown) => void | Promise<void>): void;
-    once(event: "grantPermitFailure", listener: (apiProviderId: string, requestId: number, err: unknown) => void | Promise<void>): void;
+    once(event: "error", listener: (err: unknown) => void | Promise<void>): void;
+    once(event: "releasePermitFailure", listener: (apiProviderId: string, requestId: number, err: unknown) => void | Promise<void>): void;
 
     /** Removes a specific active event listener. */
-    off(event: "error", listener: (err: Error | unknown) => void | Promise<void>): void;
-    off(event: "grantPermitFailure", listener: (apiProviderId: string, requestId: number, err: unknown) => void | Promise<void>): void;
+    off(event: "error", listener: (err: unknown) => void | Promise<void>): void;
+    off(event: "releasePermitFailure", listener: (apiProviderId: string, requestId: number, err: unknown) => void | Promise<void>): void;
 
     /** 
      * Clears all registered event listeners.
@@ -161,3 +161,6 @@ export declare class RateLimiterError extends Error {
     code: string;
     constructor(code: string, message: string);
 }
+
+// An export declaration stops TypeScript from implicitly exporting the helper interfaces above.
+export { };
