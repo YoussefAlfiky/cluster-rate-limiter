@@ -169,3 +169,9 @@ export function unregisterLimiter(apiProviderId, apiUniqueNumber) {
     providerIdLimiterRegistry?.delete(apiProviderId);
     uniqueNumberLimiterRegistry?.delete(apiUniqueNumber);
 };
+
+
+/**@param {string} id  */
+export function getPrimaryProviderIdEntry(id) {
+    return globalObject[API_PROVIDERS_ID_REGISTRY_KEY]?.get(id);
+}

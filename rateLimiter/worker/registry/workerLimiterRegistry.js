@@ -120,3 +120,8 @@ export function registerLimiterByUniqueNumber(apiUniqueNumber, registryEntry) {
         limiterRegistry.set(apiUniqueNumber, registryEntry);
     };
 };
+
+/**@param {string} id  */
+export function getWorkerProviderIdEntry(id) { 
+    return globalObject[API_PROVIDERS_ID_REGISTRY_KEY]?.get(id); 
+}

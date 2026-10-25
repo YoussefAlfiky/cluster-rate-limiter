@@ -4,6 +4,8 @@ import { PrimarySemaphoreLimiter } from "./rateLimiter/primary/PrimarySemaphoreL
 import { WorkerDurationLimiter } from "./rateLimiter/worker/WorkerDurationLimiter.js";
 import { WorkerSemaphoreLimiter } from "./rateLimiter/worker/WorkerSemaphoreLimiter.js";
 import { RateLimiterError } from "./rateLimiter/errors/RateLimiterError.js";
+import { getPrimaryProviderIdEntry } from "./rateLimiter/primary/registry/primaryLimiterRegistry.js";
+import { getWorkerProviderIdEntry } from "./rateLimiter/worker/registry/workerLimiterRegistry.js";
 
 /**
     * @typedef {Object} PrimaryRegistryEntry
@@ -61,32 +63,22 @@ import { RateLimiterError } from "./rateLimiter/errors/RateLimiterError.js";
 */
 function createPrimaryClusterRateLimiter(config) {
     const {mode, apiProviderId, maxConcurrentRequests} = config;
-    try {
-        if (mode === "duration") {
-            return new PrimaryDurationLimiter(apiProviderId, maxConcurrentRequests, config.durationInSeconds);
-        } else if (mode === "semaphore") {
-            return new PrimarySemaphoreLimiter(apiProviderId, maxConcurrentRequests);
-        }
-        throw new RateLimiterError("ERR_INVALID_MODE", `Invalid mode: ${mode}. Must be 'duration' or 'semaphore'.`);
-    } catch (err) {
-        if (!(err instanceof RateLimiterError) || err.code !== "ERR_DUPLICATE_PRIMARY_LIMITER") throw err;
-        // Note: Update this symbol string if you changed it in primaryLimiterRegistry.js
-        const API_PROVIDERS_ID_REGISTRY_KEY = Symbol.for('PrimaryRateLimiter_ClustersMode:apiProviderIdRegistry_Map');
-        const limitersRegistry = /**@type {PrimaryGlobalObject}*/(globalThis)[API_PROVIDERS_ID_REGISTRY_KEY];
-        if (!limitersRegistry) throw err;
-        const registryEntry = limitersRegistry.get(apiProviderId);
-        if (!registryEntry) throw err;
-        // Match the exact template literal format created in BasePrimaryLimiter
-        const durationStr = mode === "duration" ? config.durationInSeconds : null;
-        const expectedConfig = `${maxConcurrentRequests}-${mode}-${durationStr}`;
-        if (registryEntry.config === expectedConfig) {
-            return registryEntry.limiter;
-        }
+    const existing = getPrimaryProviderIdEntry(apiProviderId);
+    if (existing) {
+        if (existing.config === `${maxConcurrentRequests}-${mode}-${mode === "duration" ? config.durationInSeconds : null}`) {
+            return /**@type {PrimaryDurationLimiter | PrimarySemaphoreLimiter}*/(existing.limiter);
+        };
         throw new RateLimiterError(
             "ERR_CONFLICTING_LIMITER_CONFIG", 
             `A Primary Rate Limiter for '${apiProviderId}' already exists, but was initialized with a different configuration. You cannot mix modes or limits for the same API.`
         );
     }
+    if (mode === "duration") {
+        return new PrimaryDurationLimiter(apiProviderId, maxConcurrentRequests, config.durationInSeconds);
+    } else if (mode === "semaphore") {
+        return new PrimarySemaphoreLimiter(apiProviderId, maxConcurrentRequests);
+    }
+    throw new RateLimiterError("ERR_INVALID_MODE", `Invalid mode: ${mode}. Must be 'duration' or 'semaphore'.`);
 }
 
 /**
@@ -125,30 +117,22 @@ function createPrimaryClusterRateLimiter(config) {
 */
 function createWorkerClusterRateLimiter(config) {
     const { mode, apiProviderId, permitTimeoutDurationInSeconds } = config;
-    try {
-        if (mode === "duration") {
-            return new WorkerDurationLimiter(apiProviderId, permitTimeoutDurationInSeconds);
-        } else if (mode === "semaphore") {
-            return new WorkerSemaphoreLimiter(apiProviderId, permitTimeoutDurationInSeconds);
-        }
-        throw new RateLimiterError("ERR_INVALID_MODE", `Invalid mode: ${mode}. Must be 'duration' or 'semaphore'.`);
-    } catch (err) {
-        if (!(err instanceof RateLimiterError) || err.code !== "ERR_DUPLICATE_WORKER_LIMITER") throw err;
-        // Note: Update this symbol string if you changed it in workerLimiterRegistry.js
-        const API_PROVIDERS_ID_REGISTRY_KEY = Symbol.for('WorkerRateLimiter_ClustersMode:apiProviderIdRegistry_Map');
-        const limitersRegistry = /**@type {WorkerGlobalObject}*/(globalThis)[API_PROVIDERS_ID_REGISTRY_KEY];
-        if (!limitersRegistry) throw err;
-        const registryEntry = limitersRegistry.get(apiProviderId);
-        if (!registryEntry) throw err;
-        // Match the exact template literal format created in BaseWorkerLimiter
-        if (registryEntry.config === `${mode}-${permitTimeoutDurationInSeconds}`) {
-            return registryEntry.limiter;
+    const existing = getWorkerProviderIdEntry(apiProviderId);
+    if (existing) {
+        if (existing.config === `${mode}-${permitTimeoutDurationInSeconds}`) {
+            return /**@type {WorkerDurationLimiter | WorkerSemaphoreLimiter}*/(existing.limiter)
         }
         throw new RateLimiterError(
             "ERR_CONFLICTING_LIMITER_CONFIG", 
             `A Worker Rate Limiter for '${apiProviderId}' already exists, but was initialized with a different timeout or mode. You must use matching configurations across your app.`
         );
     }
+    if (mode === "duration") {
+        return new WorkerDurationLimiter(apiProviderId, permitTimeoutDurationInSeconds);
+    } else if (mode === "semaphore") {
+        return new WorkerSemaphoreLimiter(apiProviderId, permitTimeoutDurationInSeconds);
+    }
+    throw new RateLimiterError("ERR_INVALID_MODE", `Invalid mode: ${mode}. Must be 'duration' or 'semaphore'.`);
 }
 
 export { createPrimaryClusterRateLimiter, createWorkerClusterRateLimiter, RateLimiterError };
