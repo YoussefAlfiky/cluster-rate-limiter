@@ -43,10 +43,10 @@ import { createPrimaryClusterRateLimiter } from "cluster-rate-limiter";
 
 if (cluster.isPrimary) {
   createPrimaryClusterRateLimiter({
-    apiProviderId: "stripe",
+    apiProviderId: "payment_gateway",
     maxConcurrentRequests: 100,
     mode: "duration",
-    durationInSeconds: 1, // at most 100 Stripe calls started per second, across every worker
+    durationInSeconds: 1, // at most 100 payment_gateway calls started per second, across every worker
   });
 
   const numWorkers = os.availableParallelism?.() ?? os.cpus().length;
@@ -65,16 +65,16 @@ if (cluster.isPrimary) {
 ```javascript
 import { createWorkerClusterRateLimiter } from "cluster-rate-limiter";
 
-const stripeLimiter = createWorkerClusterRateLimiter({
-  apiProviderId: "stripe",
+const paymentLimiter = createWorkerClusterRateLimiter({
+  apiProviderId: "payment_gateway",
   mode: "duration",
   permitTimeoutDurationInSeconds: 5, // maximum time a request will wait for an available slot
 });
 
 async function chargeCustomer(customerId, amountCents) {
-  return stripeLimiter.run(
+  return paymentLimiter.run(
     fetch, 
-    "https://api.stripe.com/v1/charges", 
+    "https://api.payment.example.com/v1/charges", 
     {
       method: "POST",
       body: JSON.stringify({ customer: customerId, amount: amountCents }),
@@ -83,7 +83,7 @@ async function chargeCustomer(customerId, amountCents) {
 }
 ```
 
-`run()` acquires a permit, invokes your function with whatever arguments you pass it, and releases the permit once it settles (or, in duration mode, once the request has actually been dispatched — see [Performance & Architecture](#performance--architecture)). Whatever your function returns or throws is exactly what `run()` resolves or rejects with.
+`run()` acquires a permit, invokes your function with whatever arguments you pass it, and in semaphore mode, releases the permit once it settles — see [Performance & Architecture](#performance--architecture). Whatever your function returns or throws is exactly what `run()` resolves or rejects with.
 
 ### Handling errors
 
@@ -93,7 +93,7 @@ Every failure this package raises is a `RateLimiterError` with a stable `.code` 
 import { RateLimiterError } from "cluster-rate-limiter";
 
 try {
-  await stripeLimiter.run(doWork, arg1, arg2);
+  await paymentLimiter.run(doWork, arg1, arg2);
 } catch (err) {
   if (err instanceof RateLimiterError && err.code === "ERR_PERMIT_TIMEOUT") {
     // The request waited too long for a slot. Safe to retry or return HTTP 429.
@@ -153,7 +153,7 @@ Primary limiters operate as the central orchestration engine for the cluster. Th
 
 **Events**
 * `"grantPermitFailure": (workerId: number, apiProviderId: string, requestId: number, err: unknown) => void`
-  Emitted when the primary process fails to transmit a capacity grant to a worker (e.g., worker died mid-flight). The primary safely refunds the slot internally.
+  Emitted when the primary process fails to transmit a capacity grant to a worker (e.g., the worker is alive but its IPC channel closed unexpectedly). The primary safely refunds the slot internally.
 * `"error": (err: unknown) => void`
   Emitted for critical but non-fatal background errors (e.g., handshake failures).
 
@@ -241,7 +241,7 @@ class RateLimiterError extends Error {
 
 ## Performance & Architecture
 
-Engineered for bare-metal Node.js speed. This library relies on strict V8 optimizations and lock-free concurrency models to ensure the limiter never bottlenecks your throughput.
+This library relies on strict V8 optimizations and to ensure the limiter never bottlenecks your throughput.
 
 - **Zero-allocation window tracking (O(1)).** The sliding time-window log is powered by a fixed-capacity `Float64Array` ring buffer. Enqueue and prune operations execute strictly over raw memory, completely eliminating Garbage Collection (GC) spikes.
 - **Zero-allocation request queues (O(1)).** Incoming requests waiting for capacity are tracked via flat `Int32Array` ring buffers. Routing pending cluster and request IDs requires zero new object allocations.
@@ -249,7 +249,6 @@ Engineered for bare-metal Node.js speed. This library relies on strict V8 optimi
 - **O(1) fast-path routing.** Bypasses string hashing by upgrading established worker connections to instant integer-based `Map` lookups.
 - **O(1) event loop footprint.** Uses a global `Symbol.for` registry to ensure exactly *one* `process.on('message')` listener is attached per process, regardless of how many limiters you instantiate. No `MaxListenersExceededWarning` or O(N) degradation.
 - **One IPC hop, zero network overhead.** Coordination travels exclusively over `node:cluster`'s native libuv pipes. No TCP, no Redis, no network round-trips.
-- **50% less IPC traffic in duration mode.** Time-based capacity requires no explicit release signals from the worker, halving the coordination overhead compared to semaphore mode.
 
 > **The Philosophy:** The external API call you are gating will almost always cost orders of magnitude more time than the permit round-trip. The goal of this architecture is to guarantee that the limiter's internal bookkeeping is *never* the reason your throughput degrades under heavy load.
 
