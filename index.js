@@ -6,6 +6,8 @@ import { WorkerSemaphoreLimiter } from "./rateLimiter/worker/WorkerSemaphoreLimi
 import { RateLimiterError } from "./rateLimiter/errors/RateLimiterError.js";
 import { getPrimaryProviderIdEntry } from "./rateLimiter/primary/registry/primaryLimiterRegistry.js";
 import { getWorkerProviderIdEntry } from "./rateLimiter/worker/registry/workerLimiterRegistry.js";
+import { validatePrimaryLimiter } from "./rateLimiter/primary/validators/validatePrimaryLimiter.js";
+import { validateWorkerLimiterMainInput } from "./rateLimiter/worker/validators/validateWorkerLimiter.js";
 
 /**
     * @typedef {Object} PrimaryRegistryEntry
@@ -62,10 +64,13 @@ import { getWorkerProviderIdEntry } from "./rateLimiter/worker/registry/workerLi
     * @returns {PrimaryDurationLimiter | PrimarySemaphoreLimiter}
 */
 function createPrimaryClusterRateLimiter(config) {
-    const {mode, apiProviderId, maxConcurrentRequests} = config;
+    if (!config || typeof config !== "object") throw new RateLimiterError("ERR_INVALID_CONFIG", "config must be an object.");
+    const { apiProviderId, mode, maxConcurrentRequests } = config;
+    const durationInSeconds = mode === "duration" ? config.durationInSeconds : null;
+    validatePrimaryLimiter(apiProviderId, mode, maxConcurrentRequests, durationInSeconds);
     const existing = getPrimaryProviderIdEntry(apiProviderId);
     if (existing) {
-        if (existing.config === `${maxConcurrentRequests}-${mode}-${mode === "duration" ? config.durationInSeconds : null}`) {
+        if (existing.config === `${maxConcurrentRequests}-${mode}-${durationInSeconds}`) {
             return /**@type {PrimaryDurationLimiter | PrimarySemaphoreLimiter}*/(existing.limiter);
         };
         throw new RateLimiterError(
@@ -75,10 +80,9 @@ function createPrimaryClusterRateLimiter(config) {
     }
     if (mode === "duration") {
         return new PrimaryDurationLimiter(apiProviderId, maxConcurrentRequests, config.durationInSeconds);
-    } else if (mode === "semaphore") {
+    } else {
         return new PrimarySemaphoreLimiter(apiProviderId, maxConcurrentRequests);
     }
-    throw new RateLimiterError("ERR_INVALID_MODE", `Invalid mode: ${mode}. Must be 'duration' or 'semaphore'.`);
 }
 
 /**
@@ -116,7 +120,9 @@ function createPrimaryClusterRateLimiter(config) {
     * @returns {WorkerDurationLimiter | WorkerSemaphoreLimiter}
 */
 function createWorkerClusterRateLimiter(config) {
-    const { mode, apiProviderId, permitTimeoutDurationInSeconds } = config;
+    if (!config || typeof config !== "object") throw new RateLimiterError("ERR_INVALID_CONFIG", "config must be an object.");
+    const { apiProviderId, mode, permitTimeoutDurationInSeconds } = config;
+    validateWorkerLimiterMainInput(apiProviderId, mode, permitTimeoutDurationInSeconds);
     const existing = getWorkerProviderIdEntry(apiProviderId);
     if (existing) {
         if (existing.config === `${mode}-${permitTimeoutDurationInSeconds}`) {
@@ -129,10 +135,9 @@ function createWorkerClusterRateLimiter(config) {
     }
     if (mode === "duration") {
         return new WorkerDurationLimiter(apiProviderId, permitTimeoutDurationInSeconds);
-    } else if (mode === "semaphore") {
+    } else {
         return new WorkerSemaphoreLimiter(apiProviderId, permitTimeoutDurationInSeconds);
     }
-    throw new RateLimiterError("ERR_INVALID_MODE", `Invalid mode: ${mode}. Must be 'duration' or 'semaphore'.`);
 }
 
 export { createPrimaryClusterRateLimiter, createWorkerClusterRateLimiter, RateLimiterError };
