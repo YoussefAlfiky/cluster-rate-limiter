@@ -17,9 +17,8 @@ import { RateLimiterError } from "../../errors/RateLimiterError.js";
     * @param {string} apiProviderId 
     * @param {"semaphore" | "duration"} mode 
     * @param {number} permitTimeoutDurationInSeconds 
-    * @param {ReleasePermitListenerBuckets | null} releasePermitListenerBuckets
 */
-export function validateWorkerLimiter(apiProviderId, mode, permitTimeoutDurationInSeconds, releasePermitListenerBuckets) {
+export function validateWorkerLimiterMainInput(apiProviderId, mode, permitTimeoutDurationInSeconds) { 
     if (!isWorker) {
         throw new RateLimiterError(
             "ERR_NOT_WORKER", 
@@ -44,6 +43,17 @@ export function validateWorkerLimiter(apiProviderId, mode, permitTimeoutDuration
             `Invalid permitTimeoutDurationInSeconds: must be a strictly positive finite number, but received ${typeof permitTimeoutDurationInSeconds === "number" ? permitTimeoutDurationInSeconds : typeof permitTimeoutDurationInSeconds}.`
         );
     };
+};
+
+
+/**
+    * @param {string} apiProviderId 
+    * @param {"semaphore" | "duration"} mode 
+    * @param {number} permitTimeoutDurationInSeconds 
+    * @param {ReleasePermitListenerBuckets | null} releasePermitListenerBuckets
+*/
+export function validateWorkerLimiter(apiProviderId, mode, permitTimeoutDurationInSeconds, releasePermitListenerBuckets) {
+    validateWorkerLimiterMainInput(apiProviderId, mode, permitTimeoutDurationInSeconds);
     if (mode === "semaphore") {
         if (!releasePermitListenerBuckets || typeof releasePermitListenerBuckets !== "object") {
             throw new RateLimiterError(
