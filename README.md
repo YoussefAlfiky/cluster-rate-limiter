@@ -83,7 +83,7 @@ async function chargeCustomer(customerId, amountCents) {
 }
 ```
 
-`run()` acquires a permit, invokes your function with whatever arguments you pass it, and in semaphore mode, releases the permit once it settles — see [Performance & Architecture](#performance--architecture). Whatever your function returns or throws is exactly what `run()` resolves or rejects with.
+`run()` acquires a permit, invokes your function with whatever arguments you pass it, and in semaphore mode, releases the permit once it settles. Whatever your function returns or throws is exactly what `run()` resolves or rejects with.
 
 ### Handling errors
 
