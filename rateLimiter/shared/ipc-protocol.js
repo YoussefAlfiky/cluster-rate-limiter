@@ -13,11 +13,10 @@
 export const IPC_SIGNATURE = 469262976;
 
 /**
-    * A highly unique integer signature to prevent cross-library IPC collisions.
     * @constant
-    * @type {number}
+    * @type {number[]}
 */
-export const IPC_MESSAGE_LENGTH = 4;
+export const IPC_MESSAGE_LENGTHS = [4, 5];
 
 /**
     * IPC Operation Codes
@@ -39,5 +38,6 @@ export const IPC_INDEX = {
     SIGNATURE: 0,
     DESTINATION: 1,
     OPCODE: 2,
-    PAYLOAD: 3
+    PAYLOAD: 3,
+    DURATION_MODE_GRANTED_REQUEST_TIMESTAMP: 4
 };

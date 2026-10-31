@@ -1,6 +1,6 @@
 //@ts-check
 import { RateLimiterError } from "../../errors/RateLimiterError.js"
-import { IPC_SIGNATURE, IPC_MESSAGE_LENGTH, IPC_INDEX } from "../../shared/ipc-protocol.js";
+import { IPC_SIGNATURE, IPC_MESSAGE_LENGTHS, IPC_INDEX } from "../../shared/ipc-protocol.js";
 
 /**
     * @typedef {Object} ProviderIdRegistryEntry
@@ -57,7 +57,7 @@ export function registerLimiterByProviderId(apiProviderId, registryEntry) {
         process.on("message", (msg) => {
             // Hot Path (Executes 99.99% of the time)
             if (Array.isArray(msg)) {
-                if (msg.length === IPC_MESSAGE_LENGTH && msg[IPC_INDEX.SIGNATURE] === IPC_SIGNATURE) {
+                if (IPC_MESSAGE_LENGTHS.includes(msg.length) && msg[IPC_INDEX.SIGNATURE] === IPC_SIGNATURE) {
                     const apiUniqueNumber = msg[IPC_INDEX.DESTINATION];
                     const entry = globalObject[API_PROVIDERS_UNIQUE_NUMBER_REGISTRY_KEY]?.get(apiUniqueNumber);
                     if (entry) entry.handleHotMessage(msg);
