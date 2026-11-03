@@ -4,6 +4,7 @@ import { validateWorkerLimiter } from "./validators/validateWorkerLimiter.js";
 import { registerLimiterByProviderId, registerLimiterByUniqueNumber } from "./registry/workerLimiterRegistry.js";
 import { IPC_SIGNATURE, IPC_OPCODES, IPC_INDEX } from "../shared/ipc-protocol.js";
 import { emitSafeError, triggerEvent } from "../events/triggerEvent.js";
+import { EventListenerRegistry } from "../events/EventListenerRegistry.js";
 /**
     * @typedef {{resolve: (requestId: number) => void, reject: (reason?: unknown) => void, timeout: NodeJS.Timeout}} PendingRequestTrackers
     * @typedef {{resolve: () => void, reject: (reason?: unknown) => void, timeout: NodeJS.Timeout}} PrimaryAcknowledgementTrackers
@@ -12,7 +13,7 @@ import { emitSafeError, triggerEvent } from "../events/triggerEvent.js";
     * @typedef {(apiProviderId: string, requestId: number, err: unknown) => void | Promise<void>} ReleaseFailureCallback
     * @typedef {(err: unknown) => void | Promise<void>} ErrorCallback
     * 
-    * @typedef {Object} ReleasePermitListenerBuckets
+    * @typedef {Object} WorkerListenerBuckets
     * @property {{ on: Set<ReleaseFailureCallback>, once: Set<ReleaseFailureCallback> }} releasePermitFailure
     * @property {{ on: Set<ErrorCallback>, once: Set<ErrorCallback> }} error
 */
@@ -34,8 +35,9 @@ export const _kReleasePermit = Symbol("kReleasePermit");
     * `process.on("message")` listener is ever attached.
     * 
     * @abstract
+    * @extends {EventListenerRegistry<WorkerListenerBuckets>}
 */
-export class BaseWorkerLimiter {
+export class BaseWorkerLimiter extends EventListenerRegistry {
     /** 
         * @readonly
         * @type {string} 
@@ -65,9 +67,9 @@ export class BaseWorkerLimiter {
     #permitTimeoutDurationMs = 0 /* temp value till init */;
     /**
         * @readonly
-        * @type {ReleasePermitListenerBuckets | null} 
+        * @type {WorkerListenerBuckets} 
     */
-    #releasePermitListenerBuckets;
+    #listenerBuckets;
     /**@readonly */
     #MIN_SMI = -(1 << 30);
     /**@readonly */
@@ -89,10 +91,6 @@ export class BaseWorkerLimiter {
         * @param {number} permitTimeoutDurationInSeconds
         * Maximum duration (in seconds) a request will wait in the queue for a primary permit before timing out.
         * 
-        * @param {ReleasePermitListenerBuckets | null} releasePermitListenerBuckets
-        * Injected event buckets used exclusively by 'semaphore' limiters to report 
-        * network anomalies during background permit releases. Must be `null` for 'duration' limiters.
-        * 
         * @throws {Error}
         * If invoked directly with `new BaseWorkerLimiter()` (enforces abstract class behavior).
         * 
@@ -106,17 +104,24 @@ export class BaseWorkerLimiter {
         * @throws {RateLimiterError}
         * If any configuration parameter is malformed, missing, or out of bounds.
     */
-    constructor (apiProviderId, mode, permitTimeoutDurationInSeconds, releasePermitListenerBuckets) {
+    constructor(apiProviderId, mode, permitTimeoutDurationInSeconds) {
         // Validations
         if (new.target === BaseWorkerLimiter) {
             throw new Error("BaseWorkerLimiter is an abstract class and cannot be instantiated directly.");
         };
-        validateWorkerLimiter(apiProviderId, mode, permitTimeoutDurationInSeconds, releasePermitListenerBuckets);
+        validateWorkerLimiter(apiProviderId, mode, permitTimeoutDurationInSeconds);
+        // Initialize Event Registry
+        /** @type {WorkerListenerBuckets} */
+        const listenerBuckets = {
+            releasePermitFailure: { on: new Set(), once: new Set() },
+            error: { on: new Set(), once: new Set() }
+        };
+        super(listenerBuckets);
         // Assign properties values 
         this.#mode = mode;
         this.#apiProviderId = apiProviderId;
         this.#permitTimeoutDurationMs = Math.min(permitTimeoutDurationInSeconds * 1000, 2_147_483_647);
-        this.#releasePermitListenerBuckets = releasePermitListenerBuckets;
+        this.#listenerBuckets = listenerBuckets;
         // Register Limiter and initiate IPC listeners
         registerLimiterByProviderId(apiProviderId, {
             limiter: this,
@@ -243,8 +248,7 @@ export class BaseWorkerLimiter {
     [_kReleasePermit](requestId) {
         /**@param {Error} err */
         const reportError = (err) => {
-            if (!this.#releasePermitListenerBuckets) return;
-            const { releasePermitFailure, error: errorListeners } = this.#releasePermitListenerBuckets;
+            const { releasePermitFailure, error: errorListeners } = this.#listenerBuckets;
             if (!triggerEvent(releasePermitFailure, errorListeners, this.#apiProviderId, requestId, err)) {
                 emitSafeError(errorListeners, err);
             };

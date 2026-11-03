@@ -29,7 +29,7 @@ export class WorkerDurationLimiter extends BaseWorkerLimiter {
         * @throws {RateLimiterError} If any configuration parameter is invalid or out of bounds.
     */
     constructor(apiProviderId, permitTimeoutDurationInSeconds) {
-        super(apiProviderId, "duration", permitTimeoutDurationInSeconds, null);
+        super(apiProviderId, "duration", permitTimeoutDurationInSeconds);
     };
     /**
         * Executes the provided function after acquiring a capacity permit from the primary process.

@@ -1,18 +1,5 @@
 //@ts-check
 import { BaseWorkerLimiter, _kAcquirePermit, _kReleasePermit } from "./BaseWorkerLimiter.js";
-import { EventListenerRegistry } from "../events/EventListenerRegistry.js";
-/**
-    * @typedef {(apiProviderId: string, requestId: number, err: unknown) => void | Promise<void>} ReleaseFailureCallback
-    * @typedef {(err: unknown) => void | Promise<void>} ErrorCallback
-    * 
-    * @typedef {Object} ListenerBuckets
-    * @property {{ on: Set<ReleaseFailureCallback>, once: Set<ReleaseFailureCallback> }} releasePermitFailure
-    * @property {{ on: Set<ErrorCallback>, once: Set<ErrorCallback> }} error
-    *
-    * @typedef {Object} LimiterEvents
-    * @property {ReleaseFailureCallback} releasePermitFailure
-    * @property {ErrorCallback} error
-*/
 
 /**
     * Worker-side client for semaphore-based concurrency limiting in a Node.js cluster.
@@ -28,11 +15,6 @@ import { EventListenerRegistry } from "../events/EventListenerRegistry.js";
 */
 export class WorkerSemaphoreLimiter extends BaseWorkerLimiter {
     /**
-        * @readonly
-        * @type {EventListenerRegistry<ListenerBuckets>}
-    */
-    #eventEmitter;
-    /**
         * Initializes the worker-side semaphore rate limiter and establishes IPC routing.
         *
         * @param {string} apiProviderId
@@ -47,13 +29,7 @@ export class WorkerSemaphoreLimiter extends BaseWorkerLimiter {
         * @throws {RateLimiterError} If any configuration parameter is invalid or out of bounds.
     */
     constructor(apiProviderId, permitTimeoutDurationInSeconds) {
-        /**@type {ListenerBuckets}*/
-        const listenerBuckets = {
-            releasePermitFailure: { on: new Set(), once: new Set() },
-            error: { on: new Set(), once: new Set() }
-        };
-        super(apiProviderId, "semaphore", permitTimeoutDurationInSeconds, listenerBuckets);
-        this.#eventEmitter = new EventListenerRegistry(listenerBuckets);
+        super(apiProviderId, "semaphore", permitTimeoutDurationInSeconds);
     };
     /**
         * Executes the provided function after acquiring a concurrency permit from the primary process.
@@ -95,46 +71,5 @@ export class WorkerSemaphoreLimiter extends BaseWorkerLimiter {
         } finally {
             this[_kReleasePermit](requestId);
         };
-    };
-    /**
-        * Adds a persistent listener for the specified event.
-        * 
-        * @template {keyof LimiterEvents} E
-        * @param {E} event 
-        * @param {LimiterEvents[E]} listener 
-        * @returns {void}
-    */
-    on(event, listener) {
-        this.#eventEmitter.on(event, listener);
-    };
-    /**
-        * Adds a one-time listener for the specified event.
-        * 
-        * @template {keyof LimiterEvents} E
-        * @param {E} event 
-        * @param {LimiterEvents[E]} listener 
-        * @returns {void}
-    */
-    once(event, listener) {
-        this.#eventEmitter.once(event, listener);
-    };
-    /**
-        * Removes a specific listener from the specified event.
-        * 
-        * @template {keyof LimiterEvents} E
-        * @param {E} event 
-        * @param {LimiterEvents[E]} listener 
-        * @returns {void}
-    */
-    off(event, listener) {
-        this.#eventEmitter.off(event, listener);
-    };
-    /**
-        * Removes all registered event listeners.
-        * 
-        * @returns {void}
-    */
-    clearListeners() {
-        this.#eventEmitter.clearListeners();
     };
 };
