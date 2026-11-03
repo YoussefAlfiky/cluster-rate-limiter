@@ -18,7 +18,7 @@ import { RateLimiterError } from "../../errors/RateLimiterError.js";
     * @param {"semaphore" | "duration"} mode 
     * @param {number} permitTimeoutDurationInSeconds 
 */
-export function validateWorkerLimiterMainInput(apiProviderId, mode, permitTimeoutDurationInSeconds) { 
+export function validateWorkerLimiter(apiProviderId, mode, permitTimeoutDurationInSeconds) { 
     if (!isWorker) {
         throw new RateLimiterError(
             "ERR_NOT_WORKER", 
@@ -42,42 +42,5 @@ export function validateWorkerLimiterMainInput(apiProviderId, mode, permitTimeou
             "ERR_INVALID_TIMEOUT_DURATION", 
             `Invalid permitTimeoutDurationInSeconds: must be a strictly positive finite number, but received ${typeof permitTimeoutDurationInSeconds === "number" ? permitTimeoutDurationInSeconds : typeof permitTimeoutDurationInSeconds}.`
         );
-    };
-};
-
-
-/**
-    * @param {string} apiProviderId 
-    * @param {"semaphore" | "duration"} mode 
-    * @param {number} permitTimeoutDurationInSeconds 
-    * @param {ReleasePermitListenerBuckets | null} releasePermitListenerBuckets
-*/
-export function validateWorkerLimiter(apiProviderId, mode, permitTimeoutDurationInSeconds, releasePermitListenerBuckets) {
-    validateWorkerLimiterMainInput(apiProviderId, mode, permitTimeoutDurationInSeconds);
-    if (mode === "semaphore") {
-        if (!releasePermitListenerBuckets || typeof releasePermitListenerBuckets !== "object") {
-            throw new RateLimiterError(
-                "ERR_INVALID_LISTENER_BUCKETS", 
-                "Semaphore mode requires 'releasePermitListenerBuckets' to be a valid object."
-            );
-        };
-        const { releasePermitFailure, error } = releasePermitListenerBuckets;
-        if (!releasePermitFailure || !error) {
-            throw new RateLimiterError(
-                "ERR_INVALID_LISTENER_BUCKETS", 
-                "'releasePermitListenerBuckets' must contain 'releasePermitFailure' and 'error' properties."
-            );
-        };
-        if (
-            !(releasePermitFailure.on instanceof Set)
-            || !(releasePermitFailure.once instanceof Set)
-            || !(error.on instanceof Set)
-            || !(error.once instanceof Set)
-        ) {
-            throw new RateLimiterError(
-                "ERR_INVALID_LISTENER_BUCKETS", 
-                "Listener bucket collections ('on' and 'once') must be instances of Set."
-            );
-        }
     };
 };

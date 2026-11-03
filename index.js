@@ -7,7 +7,7 @@ import { RateLimiterError } from "./rateLimiter/errors/RateLimiterError.js";
 import { getPrimaryProviderIdEntry } from "./rateLimiter/primary/registry/primaryLimiterRegistry.js";
 import { getWorkerProviderIdEntry } from "./rateLimiter/worker/registry/workerLimiterRegistry.js";
 import { validatePrimaryLimiter } from "./rateLimiter/primary/validators/validatePrimaryLimiter.js";
-import { validateWorkerLimiterMainInput } from "./rateLimiter/worker/validators/validateWorkerLimiter.js";
+import { validateWorkerLimiter } from "./rateLimiter/worker/validators/validateWorkerLimiter.js";
 
 /**
     * @typedef {Object} PrimaryRegistryEntry
@@ -122,7 +122,7 @@ function createPrimaryClusterRateLimiter(config) {
 function createWorkerClusterRateLimiter(config) {
     if (!config || typeof config !== "object") throw new RateLimiterError("ERR_INVALID_CONFIG", "config must be an object.");
     const { apiProviderId, mode, permitTimeoutDurationInSeconds } = config;
-    validateWorkerLimiterMainInput(apiProviderId, mode, permitTimeoutDurationInSeconds);
+    validateWorkerLimiter(apiProviderId, mode, permitTimeoutDurationInSeconds);
     const existing = getWorkerProviderIdEntry(apiProviderId);
     if (existing) {
         if (existing.config === `${mode}-${permitTimeoutDurationInSeconds}`) {
