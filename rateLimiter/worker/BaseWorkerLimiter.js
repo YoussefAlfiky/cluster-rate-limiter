@@ -338,6 +338,8 @@ export class BaseWorkerLimiter extends EventListenerRegistry {
             const requestId = msg[IPC_INDEX.PAYLOAD];
             const trackers = this.#pendingRequests.get(requestId);
             if (!trackers) {
+                // No pending request: it timed out here, so this grant is late.
+                // Relies on IPC delivering each GRANT exactly once.
                 this[_kReleasePermit](
                     requestId,
                     msg[IPC_INDEX.DURATION_MODE_GRANTED_REQUEST_TIMESTAMP] /*undefined in semaphore mode*/
