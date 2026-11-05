@@ -58,7 +58,7 @@ export class PrimaryDurationLimiter extends BasePrimaryLimiter {
         // register
         this[_kPublish]({
             handleHotMessage: (worker, msg) => this.#handleHotMessage(worker, msg),
-            handleExit: () => this.#grantPendingRequests()
+            handleExit: () => {} // no-op
         });
     };
     /**
@@ -147,7 +147,6 @@ export class PrimaryDurationLimiter extends BasePrimaryLimiter {
                 resolve();
             };
         };
-        this.#grantPendingRequests();
     };
     /** 
         * Transmits the capacity grant to the target worker via IPC.
