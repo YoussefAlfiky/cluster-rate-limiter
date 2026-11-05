@@ -238,14 +238,15 @@ export class BaseWorkerLimiter extends EventListenerRegistry {
         * `releasePermitListenerBuckets` for developer visibility.
         * 
         * **Subclass Usage:**
-        * Should only be invoked by "semaphore" mode subclasses inside a `finally` block to 
+        * Should be invoked by "semaphore" mode subclasses inside the `finally` block in run() to 
         * guarantee the concurrency slot is released regardless of the workload's outcome.
         * 
         * @protected
         * @param {number} requestId The unique local ID of the permit to release.
+        * @param {number} [grantTimestamp]
         * @returns {void}
     */
-    [_kReleasePermit](requestId) {
+    [_kReleasePermit](requestId, grantTimestamp) {
         /**@param {Error} err */
         const reportError = (err) => {
             const { releasePermitFailure, error: errorListeners } = this.#listenerBuckets;
@@ -253,7 +254,12 @@ export class BaseWorkerLimiter extends EventListenerRegistry {
                 emitSafeError(errorListeners, err);
             };
         };
-        const message = [IPC_SIGNATURE, this.#apiUniqueNumber, IPC_OPCODES.RELEASE, requestId];
+        const message = [
+            IPC_SIGNATURE,
+            this.#apiUniqueNumber,
+            IPC_OPCODES.RELEASE,
+            grantTimestamp ? grantTimestamp : requestId
+        ];
         const sendPermitTermination = /** @param {number} retryCount */(retryCount) => {
             if (!process.send) {
                 reportError(new RateLimiterError(
@@ -332,9 +338,10 @@ export class BaseWorkerLimiter extends EventListenerRegistry {
             const requestId = msg[IPC_INDEX.PAYLOAD];
             const trackers = this.#pendingRequests.get(requestId);
             if (!trackers) {
-                if (this.#mode === "semaphore") {
-                    this[_kReleasePermit](requestId);
-                }
+                this[_kReleasePermit](
+                    requestId,
+                    msg[IPC_INDEX.DURATION_MODE_GRANTED_REQUEST_TIMESTAMP] /*undefined in semaphore mode*/
+                );
                 return;
             };
             this.#pendingRequests.delete(requestId);

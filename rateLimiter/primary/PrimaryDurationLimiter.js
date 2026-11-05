@@ -1,7 +1,6 @@
 // @ts-check
 import cluster from "node:cluster";
 import { performance } from "node:perf_hooks";
-import { setTimeout as setTimeoutPromise } from "node:timers/promises";
 import { Int32Queue } from "../../lib/Int32Queue.js"
 import { Float64SortedQueue } from "../../lib/Float64SortedQueue.js";
 import { BasePrimaryLimiter, _kTriggerGrantFailureEvent, _kPublish } from "./BasePrimaryLimiter.js";
@@ -38,6 +37,8 @@ export class PrimaryDurationLimiter extends BasePrimaryLimiter {
     */
     #maxConcurrentRequests = 0;
     #isGrantingPermitsForPendingRequests = false;
+    /** @type {{resolve: () => void, timeout: NodeJS.Timeout} | null} */
+    #capacityWaitTrackers = null;
     /**
         * Creates a duration-based cluster rate limiter.
         *
@@ -61,11 +62,17 @@ export class PrimaryDurationLimiter extends BasePrimaryLimiter {
         });
     };
     /**
-        * Sweeps naturally expired timestamps from the log. 
+        * Sweeps timestamps that have left the sliding window from the log and, if the log is
+        * still full, waits for a free slot.
         * 
-        * If capacity is exhausted, it pauses execution without blocking the event loop, 
-        * waiting exactly until the oldest timestamp expires to free a slot.
-        * @returns {Promise<void>}
+        * The wait does not block the event loop and ends at whichever comes first: the oldest
+        * timestamp leaving the window, or `#refundSlot` freeing a slot early and cutting the
+        * sleep short. After every wake-up the log is swept and checked again instead of
+        * assuming there is room, so the limit always comes from the log, never from the wake-up.
+        * 
+        * Only `#grantPendingRequests` calls this, and its lock keeps at most one wait in flight.
+        * The promise never rejects.
+        * @returns {Promise<void>} Resolves once at least one capacity slot is free.
     */
     async #pruneGrantLog() {
         // Instantly sweep away any naturally expired timestamps
@@ -76,8 +83,12 @@ export class PrimaryDurationLimiter extends BasePrimaryLimiter {
             if (firstGrantTimeStamp === undefined) break; 
             const remainingTimeTillNextTick = this.#rateLimitDurationInMilliSeconds - (performance.now() - firstGrantTimeStamp);
             if (remainingTimeTillNextTick > 0) {
-                // Wait exactly until the oldest timestamp falls out of the sliding window
-                await setTimeoutPromise(Math.min(remainingTimeTillNextTick, 2_147_483_647 /*24.8 days*/));
+                // Wait until the oldest timestamp leaves the sliding window, or until #refundSlot frees a slot early
+                await /**@type {Promise<void>}*/(new Promise((resolve) => {
+                    const timeout = setTimeout(resolve, Math.min(remainingTimeTillNextTick, 2_147_483_647 /*24.8 days*/));
+                    this.#capacityWaitTrackers = {resolve, timeout};
+                }));
+                this.#capacityWaitTrackers = null;
             };
             this.#grantTimestampSortedLog.removeBefore(performance.now() - this.#rateLimitDurationInMilliSeconds);
         };
@@ -103,18 +114,21 @@ export class PrimaryDurationLimiter extends BasePrimaryLimiter {
                 if (!worker || worker.isDead()) continue;
                 const timestamp = performance.now();
                 this.#grantTimestampSortedLog.enqueue(timestamp);
-                this.#grantRequest(worker, [IPC_SIGNATURE, this._apiUniqueNumber, IPC_OPCODES.GRANT, requestId], timestamp, 0);
+                this.#grantRequest(worker, [IPC_SIGNATURE, this._apiUniqueNumber, IPC_OPCODES.GRANT, requestId, timestamp], 0);
             };
         } finally {
             this.#isGrantingPermitsForPendingRequests = false;
         };
     };
-    /** 
-        * Safely reclaims a capacity slot if an IPC transmission fails.
-        * Uses a conservative O(1) mathematical shift by dropping the oldest timestamp 
-        * rather than performing an expensive array search for the exact failed timestamp.
+    /**
+        * Reclaims a capacity slot for a grant that was never used: its IPC transmission failed,
+        * or the worker's request had already timed out when the grant arrived (the worker then
+        * answers with a RELEASE carrying the grant timestamp).
+        * Uses a conservative O(1) shift by dropping the oldest timestamp rather than searching
+        * for the exact one. If the grant loop is sleeping for capacity, it is woken so the
+        * freed slot is used immediately.
         * 
-        * @param {number} failedRequestTimestamp The exact time the failed request was originally granted.
+        * @param {number} failedRequestTimestamp The time the unused grant was originally issued.
     */
     #refundSlot(failedRequestTimestamp) {
         /* Prevent "Double Refund": Only dequeue if the failed request's 
@@ -127,6 +141,11 @@ export class PrimaryDurationLimiter extends BasePrimaryLimiter {
             "conservative shift" (throttling future requests slightly), 
             which guarantees we never breach the API limit while maintaining bare-metal C++ speed.*/
             this.#grantTimestampSortedLog.dequeue();
+            if (this.#capacityWaitTrackers) {
+                const { resolve, timeout } = this.#capacityWaitTrackers;
+                clearTimeout(timeout);
+                resolve();
+            };
         };
         this.#grantPendingRequests();
     };
@@ -136,11 +155,11 @@ export class PrimaryDurationLimiter extends BasePrimaryLimiter {
         * asynchronous channel closures, and transient transmission failures via retries.
         * 
         * @param {Worker} worker The target Node.js cluster worker.
-        * @param {number[]} message The high-performance integer array IPC payload.
-        * @param {number} timestamp The timestamp when the permit was granted.
+        * @param {number[]} message The GRANT payload: [signature, apiUniqueNumber, opcode, requestId, grantTimestamp].
         * @param {number} retryCount Current retry iteration (max 3).
     */
-    #grantRequest(worker, message, timestamp, retryCount) {
+    #grantRequest(worker, message, retryCount) {
+        const timestamp = message[IPC_INDEX.DURATION_MODE_GRANTED_REQUEST_TIMESTAMP];
         try {
             worker.send(message, (err) => {
                 if (err) {
@@ -148,7 +167,7 @@ export class PrimaryDurationLimiter extends BasePrimaryLimiter {
                         this.#refundSlot(timestamp);
                     } else {
                         if (retryCount < 3) {
-                            setTimeout(() => this.#grantRequest(worker, message, timestamp, retryCount + 1), 50);
+                            setTimeout(() => this.#grantRequest(worker, message, retryCount + 1), 50);
                         } else {
                             this.#refundSlot(timestamp);
                             this[_kTriggerGrantFailureEvent](worker.id, message[IPC_INDEX.PAYLOAD] /*request id*/, err);
@@ -182,6 +201,9 @@ export class PrimaryDurationLimiter extends BasePrimaryLimiter {
             this.#requestsIdParallelQueue.enqueue(requestId)
             this.#clustersIdParallelQueue.enqueue(worker.id)
             this.#grantPendingRequests();
-        };
+        } else if (opCode === IPC_OPCODES.RELEASE) { 
+            const timestamp = msg[IPC_INDEX.PAYLOAD]
+            this.#refundSlot(timestamp)
+        }
     };
 };
