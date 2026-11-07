@@ -166,27 +166,24 @@ export class PrimaryDurationLimiter extends BasePrimaryLimiter {
         try {
             worker.send(message, (err) => {
                 if (err) {
-                    if (worker.isDead()) {
+                    if (worker.isDead()) return this.#refundSlot(timestamp);
+                    if (retryCount >= 3) {
                         this.#refundSlot(timestamp);
-                    } else {
-                        if (retryCount < 3) {
-                            setTimeout(() => {
-                                const refundedSlot = this.#refundSlot(timestamp);
-                                if (worker.isDead()) return;
-                                if (!refundedSlot && this.#grantTimestampSortedLog.size >= this.#maxConcurrentRequests) {
-                                    this[_kTriggerGrantFailureEvent](worker.id, message[IPC_INDEX.PAYLOAD] /*request id*/, err);
-                                    return;
-                                }
-                                const newTimestamp = performance.now();
-                                this.#grantTimestampSortedLog.enqueue(newTimestamp);
-                                message[IPC_INDEX.DURATION_MODE_GRANTED_REQUEST_TIMESTAMP] = newTimestamp;
-                                this.#grantRequest(worker, message, retryCount + 1)
-                            }, 50);
-                        } else {
-                            this.#refundSlot(timestamp);
+                        this[_kTriggerGrantFailureEvent](worker.id, message[IPC_INDEX.PAYLOAD] /*request id*/, err);
+                        return;
+                    }
+                    setTimeout(() => {
+                        const refundedSlot = this.#refundSlot(timestamp);
+                        if (worker.isDead()) return;
+                        if (!refundedSlot && this.#grantTimestampSortedLog.size >= this.#maxConcurrentRequests) {
                             this[_kTriggerGrantFailureEvent](worker.id, message[IPC_INDEX.PAYLOAD] /*request id*/, err);
-                        };
-                    };
+                            return;
+                        }
+                        const newTimestamp = performance.now();
+                        this.#grantTimestampSortedLog.enqueue(newTimestamp);
+                        message[IPC_INDEX.DURATION_MODE_GRANTED_REQUEST_TIMESTAMP] = newTimestamp;
+                        this.#grantRequest(worker, message, retryCount + 1)
+                    }, 50);
                 };
             });
         } catch (syncErr) {
