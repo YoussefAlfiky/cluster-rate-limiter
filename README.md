@@ -188,22 +188,21 @@ Worker limiters are the application-facing interfaces used to wrap and execute y
 **Common API (Both Modes)**
 * `apiProviderId: string` (Readonly)
 * `mode: "duration" | "semaphore"` (Readonly)
-* `ready(): Promise<boolean>`
+* `ready(): Promise<true>`
   Manually awaits or triggers the IPC connection handshake with the primary process.
 * `run<T, A extends unknown[]>(caller: (...args: A) => T | Promise<T>, ...args: A): Promise<T>`
   Automatically acquires a permit, executes the `caller` function, and returns its result.
 
-**`WorkerSemaphoreLimiter` Only**
+**Event Methods (Both Modes)**
 
-Because semaphore mode explicitly releases concurrency tokens when a task finishes, this class implements an event emitter to trap background release transmission failures.
-
-**Event Methods**
+Releases happen in the background and never block `run()`: semaphore mode releases a permit when a task finishes, and duration mode refunds a grant that arrives after its request timed out. Subscribe to these events for visibility into them.
 * `on(event, listener)` / `once(event, listener)`
 * `off(event, listener)` / `clearListeners()`
 
-**Worker Events**
-* `"releasePermitFailure": (apiProviderId: string, requestId: number, err: unknown) => void`
-* `"error": (err: unknown) => void`
+**Worker Events (Both Modes)**
+* `"releasePermitFailure": (apiProviderId: string, requestId: number, err: unknown) => void | Promise<void>`
+  A release signal could not be delivered to the primary. In semaphore mode this is the permit release after `run()` settled. In duration mode it is the refund of a late grant.
+* `"error": (err: unknown) => void | Promise<void>`
 
 ### `RateLimiterError`
 
