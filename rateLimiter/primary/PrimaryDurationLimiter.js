@@ -129,6 +129,8 @@ export class PrimaryDurationLimiter extends BasePrimaryLimiter {
         * freed slot is used immediately.
         * 
         * @param {number} failedRequestTimestamp The time the unused grant was originally issued.
+        * @returns {boolean} `true` if a slot was freed; `false` if nothing was removed because the
+        * grant had already expired from the window or the log was empty.
     */
     #refundSlot(failedRequestTimestamp) {
         /* Prevent "Double Refund": Only dequeue if the failed request's 
@@ -146,7 +148,9 @@ export class PrimaryDurationLimiter extends BasePrimaryLimiter {
                 clearTimeout(timeout);
                 resolve();
             };
+            return true;
         };
+        return false;
     };
     /** 
         * Transmits the capacity grant to the target worker via IPC.
@@ -166,7 +170,18 @@ export class PrimaryDurationLimiter extends BasePrimaryLimiter {
                         this.#refundSlot(timestamp);
                     } else {
                         if (retryCount < 3) {
-                            setTimeout(() => this.#grantRequest(worker, message, retryCount + 1), 50);
+                            setTimeout(() => {
+                                const refundedSlot = this.#refundSlot(timestamp);
+                                if (worker.isDead()) return;
+                                if (!refundedSlot && this.#grantTimestampSortedLog.size >= this.#maxConcurrentRequests) {
+                                    this[_kTriggerGrantFailureEvent](worker.id, message[IPC_INDEX.PAYLOAD] /*request id*/, err);
+                                    return;
+                                }
+                                const newTimestamp = performance.now();
+                                this.#grantTimestampSortedLog.enqueue(newTimestamp);
+                                message[IPC_INDEX.DURATION_MODE_GRANTED_REQUEST_TIMESTAMP] = newTimestamp;
+                                this.#grantRequest(worker, message, retryCount + 1)
+                            }, 50);
                         } else {
                             this.#refundSlot(timestamp);
                             this[_kTriggerGrantFailureEvent](worker.id, message[IPC_INDEX.PAYLOAD] /*request id*/, err);
