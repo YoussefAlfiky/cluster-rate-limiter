@@ -80,6 +80,33 @@ interface BaseWorkerLimiter {
 
     /** Executes the target function while enforcing cluster-wide rate limits. */
     run<T, A extends unknown[]>(caller: (...args: A) => T | Promise<T>, ...args: A): Promise<T>;
+    
+    /**
+     * Subscribes to an event.
+     *
+     * `releasePermitFailure` fires when a release signal could not be delivered to the primary:
+     * 
+     * in semaphore mode, the permit release after `run()` settles; 
+     * 
+     * in duration mode, the refund
+     * of a late grant (a grant that arrived after `run()` had already timed out).
+    */
+    on(event: "error", listener: (err: unknown) => void | Promise<void>): void;
+    on(event: "releasePermitFailure", listener: (apiProviderId: string, requestId: number, err: unknown) => void | Promise<void>): void;
+
+    /** Subscribes to an event for a single trigger. */
+    once(event: "error", listener: (err: unknown) => void | Promise<void>): void;
+    once(event: "releasePermitFailure", listener: (apiProviderId: string, requestId: number, err: unknown) => void | Promise<void>): void;
+
+    /** Removes a specific active event listener. */
+    off(event: "error", listener: (err: unknown) => void | Promise<void>): void;
+    off(event: "releasePermitFailure", listener: (apiProviderId: string, requestId: number, err: unknown) => void | Promise<void>): void;
+
+    /** 
+     * Clears all registered event listeners.
+     * Essential for cleanup during graceful shutdowns or test teardowns.
+     */
+    clearListeners(): void;
 }
 
 
@@ -99,24 +126,6 @@ export interface WorkerDurationLimiter extends BaseWorkerLimiter {
 
 export interface WorkerSemaphoreLimiter extends BaseWorkerLimiter {
     readonly mode: "semaphore";
-
-    /** Subscribes to an event continuously. */
-    on(event: "error", listener: (err: unknown) => void | Promise<void>): void;
-    on(event: "releasePermitFailure", listener: (apiProviderId: string, requestId: number, err: unknown) => void | Promise<void>): void;
-
-    /** Subscribes to an event for a single trigger. */
-    once(event: "error", listener: (err: unknown) => void | Promise<void>): void;
-    once(event: "releasePermitFailure", listener: (apiProviderId: string, requestId: number, err: unknown) => void | Promise<void>): void;
-
-    /** Removes a specific active event listener. */
-    off(event: "error", listener: (err: unknown) => void | Promise<void>): void;
-    off(event: "releasePermitFailure", listener: (apiProviderId: string, requestId: number, err: unknown) => void | Promise<void>): void;
-
-    /** 
-     * Clears all registered event listeners.
-     * Essential for cleanup during graceful shutdowns or test teardowns.
-     */
-    clearListeners(): void;
 }
 
 
