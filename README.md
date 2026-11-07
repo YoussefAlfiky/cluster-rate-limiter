@@ -108,7 +108,7 @@ try {
 |---|---|---|
 | Guarantees | At most N calls in flight at once | At most N calls **started** in any trailing window |
 | Capacity restored | When your function's promise settles | Automatically as the time window passes |
-| Worker → primary traffic | One ask, one release, per call | One ask per call — no release message at all |
+| Worker → primary traffic | One ask, one release, per call | One ask per call; a release is sent only to refund a grant that arrived after its request timed out |
 | Use for | "This has N concurrent connection slots" | "This API allows N requests per second" |
 
 If the thing you're protecting has a hard concurrency ceiling (a connection pool, a license count), use **semaphore**. If it's an API with a published rate limit, use **duration** — a concurrency cap alone won't stop you from bursting past a requests-per-second limit.
@@ -203,6 +203,7 @@ Releases happen in the background and never block `run()`: semaphore mode releas
 * `"releasePermitFailure": (apiProviderId: string, requestId: number, err: unknown) => void | Promise<void>`
   A release signal could not be delivered to the primary. In semaphore mode this is the permit release after `run()` settled. In duration mode it is the refund of a late grant.
 * `"error": (err: unknown) => void | Promise<void>`
+  Emitted for critical but non-fatal background errors (e.g., `ERR_HANDSHAKE_FAILED`).
 
 ### `RateLimiterError`
 
@@ -225,7 +226,7 @@ class RateLimiterError extends Error {
 | `ERR_DUPLICATE_PRIMARY_LIMITER` / `ERR_DUPLICATE_WORKER_LIMITER` | Internal — surfaced as `ERR_CONFLICTING_LIMITER_CONFIG` by the factories when settings genuinely differ; otherwise handled silently. |
 | `ERR_CONFLICTING_LIMITER_CONFIG` | The same `apiProviderId` was constructed twice with different settings in the same process. |
 | `ERR_MODE_MISMATCH` | A worker's `mode` does not match the primary's initialized mode for this `apiProviderId`. |
-| `ERR_HANDSHAKE_FAILED` | The primary process failed to send the initial boot configuration back to a worker. |
+| `ERR_HANDSHAKE_FAILED` | The primary process failed to send the initial boot configuration back to a worker. Delivered through the primary limiter's `error` event, not thrown. |
 | `ERR_IPC_CHANNEL_CLOSED` | A worker attempted to acquire/release a permit, or complete a handshake, but its IPC channel to the primary process was closed or disconnected. |
 | `ERR_PRIMARY_ACK_TIMEOUT` | The primary process never confirmed the worker's initial handshake. |
 | `ERR_PERMIT_TIMEOUT` | `.run()` waited longer than `permitTimeoutDurationInSeconds` for capacity. |
@@ -240,11 +241,11 @@ class RateLimiterError extends Error {
 
 ## Performance & Architecture
 
-This library relies on strict V8 optimizations and to ensure the limiter never bottlenecks your throughput.
+This library relies on strict optimizations to ensure the limiter never bottlenecks your throughput.
 
-- **Zero-allocation window tracking (O(1)).** The sliding time-window log is powered by a fixed-capacity `Float64Array` ring buffer. Enqueue and prune operations execute strictly over raw memory, completely eliminating Garbage Collection (GC) spikes.
+- **Allocation-free window tracking.** The sliding window log is a fixed-capacity Float64Array ring buffer: enqueue and refund are O(1), pruning is O(log N), and the log itself adds no GC pressure.
 - **Zero-allocation request queues (O(1)).** Incoming requests waiting for capacity are tracked via flat `Int32Array` ring buffers. Routing pending cluster and request IDs requires zero new object allocations.
-- **V8 SMI IPC payloads.** Hot-path messages use fixed-length arrays of Small Integers (SMIs) rather than JSON objects, drastically reducing V8 serialization/deserialization overhead.
+- **Compact numeric IPC payloads.** Hot-path messages are small fixed-length arrays of numbers, not objects with string keys.
 - **O(1) fast-path routing.** Bypasses string hashing by upgrading established worker connections to instant integer-based `Map` lookups.
 - **O(1) event loop footprint.** Uses a global `Symbol.for` registry to ensure exactly *one* `process.on('message')` listener is attached per process, regardless of how many limiters you instantiate. No `MaxListenersExceededWarning` or O(N) degradation.
 - **One IPC hop, zero network overhead.** Coordination travels exclusively over `node:cluster`'s native libuv pipes. No TCP, no Redis, no network round-trips.
@@ -253,9 +254,13 @@ This library relies on strict V8 optimizations and to ensure the limiter never b
 
 ## Fault Tolerance & Crash Recovery
 
-A worker that dies mid-request is detected via `cluster`'s own `'exit'` event, ensuring system stability without relying on arbitrary TTL timeouts:
-- **Semaphore mode (Instant release):** Active capacity is instantly freed the moment the OS reaps the process, ensuring your throughput doesn't bottleneck waiting for a timeout.
-- **Duration mode (State-preserving):** Crash events do not erase historical grants. Sent requests remain accurately counted until they naturally expire, guaranteeing zero rate-limit violations during worker restarts.
+The limiter reclaims capacity from dead workers and abandoned requests without relying on arbitrary TTL timeouts.
+
+**A worker dies mid-request.** The primary detects it through `cluster`'s own `'exit'` event:
+- **Semaphore mode (instant release):** capacity held by the worker is freed the moment the OS reaps the process, so your throughput never waits on a timeout.
+- **Duration mode (state-preserving):** crashes don't erase historical grants. Sent requests stay counted until they naturally expire, so a worker restart can't make the window forget calls it already granted.
+
+**A request times out waiting for a permit (both modes).** If the grant arrives after `run()` has already timed out, the worker hands it straight back: semaphore mode releases the permit, and duration mode refunds the slot. Abandoned requests don't leak capacity.
 
 ## Design trade-offs
 
