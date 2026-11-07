@@ -185,7 +185,7 @@ function createWorkerClusterRateLimiter(config: WorkerDurationConfig): WorkerDur
 
 Worker limiters are the application-facing interfaces used to wrap and execute your actual business logic.
 
-**Common API (Both Modes)**
+**Common API**
 * `apiProviderId: string` (Readonly)
 * `mode: "duration" | "semaphore"` (Readonly)
 * `ready(): Promise<true>`
@@ -193,13 +193,11 @@ Worker limiters are the application-facing interfaces used to wrap and execute y
 * `run<T, A extends unknown[]>(caller: (...args: A) => T | Promise<T>, ...args: A): Promise<T>`
   Automatically acquires a permit, executes the `caller` function, and returns its result.
 
-**Event Methods (Both Modes)**
-
-Releases happen in the background and never block `run()`: semaphore mode releases a permit when a task finishes, and duration mode refunds a grant that arrives after its request timed out. Subscribe to these events for visibility into them.
+**Event Methods**
 * `on(event, listener)` / `once(event, listener)`
 * `off(event, listener)` / `clearListeners()`
 
-**Worker Events (Both Modes)**
+**Worker Events**
 * `"releasePermitFailure": (apiProviderId: string, requestId: number, err: unknown) => void | Promise<void>`
   A release signal could not be delivered to the primary. In semaphore mode this is the permit release after `run()` settled. In duration mode it is the refund of a late grant.
 * `"error": (err: unknown) => void | Promise<void>`
