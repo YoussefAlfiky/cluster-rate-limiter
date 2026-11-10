@@ -5,6 +5,7 @@ import { Int32Queue } from "../../lib/Int32Queue.js"
 import { Float64SortedQueue } from "../../lib/Float64SortedQueue.js";
 import { BasePrimaryLimiter, _kTriggerGrantFailureEvent, _kPublish } from "./BasePrimaryLimiter.js";
 import { IPC_SIGNATURE, IPC_OPCODES, IPC_INDEX } from "../shared/ipc-protocol.js";
+import { setTimeout as setTimeoutPromise } from "node:timers/promises";
 
 /** @typedef {import("node:cluster").Worker} Worker */
 
@@ -39,6 +40,7 @@ export class PrimaryDurationLimiter extends BasePrimaryLimiter {
     #isGrantingPermitsForPendingRequests = false;
     /** @type {{resolve: () => void, timeout: NodeJS.Timeout} | null} */
     #capacityWaitTrackers = null;
+    #startedGranting = false;
     /**
         * Creates a duration-based cluster rate limiter.
         *
@@ -101,6 +103,14 @@ export class PrimaryDurationLimiter extends BasePrimaryLimiter {
     async #grantPendingRequests() {
         if (this.#isGrantingPermitsForPendingRequests || !cluster.workers) return;
         this.#isGrantingPermitsForPendingRequests = true;
+        if (!this.#startedGranting) {
+            this.#startedGranting = true;
+            const now = performance.now();
+            if (this.#rateLimitDurationInMilliSeconds <= 2050 && now < this.#rateLimitDurationInMilliSeconds) {
+                // Wait one window after primary start before granting => For windows up to 2 s
+                await setTimeoutPromise(this.#rateLimitDurationInMilliSeconds - now);
+            };
+        };
         try {
             while ( this.#requestsIdParallelQueue.size > 0 ) {
                 await this.#pruneGrantLog();
