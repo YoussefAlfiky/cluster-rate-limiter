@@ -103,15 +103,15 @@ export class PrimaryDurationLimiter extends BasePrimaryLimiter {
     async #grantPendingRequests() {
         if (this.#isGrantingPermitsForPendingRequests || !cluster.workers) return;
         this.#isGrantingPermitsForPendingRequests = true;
-        if (!this.#startedGranting) {
-            this.#startedGranting = true;
-            const now = performance.now();
-            if (this.#rateLimitDurationInMilliSeconds <= 2050 && now < this.#rateLimitDurationInMilliSeconds) {
-                // Wait one window after primary start before granting => For windows up to 2 s
-                await setTimeoutPromise(this.#rateLimitDurationInMilliSeconds - now);
-            };
-        };
         try {
+            if (!this.#startedGranting) {
+                const now = performance.now();
+                if (this.#rateLimitDurationInMilliSeconds <= 2050 && now < this.#rateLimitDurationInMilliSeconds) {
+                    // Wait one window after primary start before granting => For windows up to 2 s
+                    await setTimeoutPromise(this.#rateLimitDurationInMilliSeconds - now);
+                };
+                this.#startedGranting = true;
+            };
             while ( this.#requestsIdParallelQueue.size > 0 ) {
                 await this.#pruneGrantLog();
                 /* 
