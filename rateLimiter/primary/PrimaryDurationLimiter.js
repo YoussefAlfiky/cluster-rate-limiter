@@ -106,9 +106,10 @@ export class PrimaryDurationLimiter extends BasePrimaryLimiter {
         try {
             if (!this.#startedGranting) {
                 const now = performance.now();
-                if (this.#rateLimitDurationInMilliSeconds <= 2050 && now < this.#rateLimitDurationInMilliSeconds) {
-                    // Wait one window after primary start before granting => For windows up to 2 s
-                    await setTimeoutPromise(this.#rateLimitDurationInMilliSeconds - now);
+                const warmUpMs = Math.min(this.#rateLimitDurationInMilliSeconds, 2050);
+                if (now < warmUpMs) {
+                    // Wait one window after primary start before granting (capped at 2 s + 50 ms jitter buffer)
+                    await setTimeoutPromise(warmUpMs - now);
                 };
                 this.#startedGranting = true;
             };
